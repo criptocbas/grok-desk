@@ -134,6 +134,23 @@ fn permission_respond(
 }
 
 #[tauri::command]
+fn plan_approval_respond(
+    state: State<'_, AppState>,
+    request_id: u64,
+    outcome: String,
+    feedback: Option<String>,
+) -> Result<(), String> {
+    let agent = state.agent()?;
+    let outcome = match outcome.as_str() {
+        "approved" | "cancelled" | "abandoned" => outcome,
+        _ => return Err(format!("invalid plan outcome: {outcome}")),
+    };
+    agent
+        .respond_plan_approval(request_id, &outcome, feedback)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_disk_sessions(limit: Option<usize>) -> Result<Vec<DiskSession>, String> {
     SharedAgent::list_disk_sessions(limit.unwrap_or(40)).map_err(|e| e.to_string())
 }
@@ -179,6 +196,7 @@ pub fn run() {
             session_prompt,
             session_cancel,
             permission_respond,
+            plan_approval_respond,
             list_disk_sessions,
             read_plan_doc,
             git_status,

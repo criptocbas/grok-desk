@@ -10,6 +10,7 @@ import type {
   GitFileStatus,
   GrokStatus,
   PermissionRequest,
+  PlanApprovalRequest,
   PlanEntry,
   ReviewComment,
   SessionInfo,
@@ -143,6 +144,8 @@ export default function App() {
   const [gitLoading, setGitLoading] = useState(false);
   const [stderrTail, setStderrTail] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** Avoid stale closures when answering plan approval reverse-requests. */
+  const planApprovalRef = useRef<Record<string, PlanApprovalRequest>>({});
   // Per-session streaming buffers keyed by sessionId
   const streamBuf = useRef<
     Record<
@@ -290,6 +293,28 @@ export default function App() {
       }));
     }).then(track);
 
+    void listen<PlanApprovalRequest>("acp://plan-approval", (e) => {
+      const p = e.payload;
+      if (!p?.sessionId) return;
+      planApprovalRef.current[p.sessionId] = p;
+      setPlanOpen(true);
+      setActiveId(p.sessionId);
+      patchSession(p.sessionId, (s) => ({
+        ...s,
+        planApproval: p,
+        planDoc: p.planContent ?? s.planDoc,
+        modeId: "plan",
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text: "Plan ready — use the Plan pane to Approve, request changes, or abandon.",
+          },
+        ],
+      }));
+    }).then(track);
+
     void listen<Record<string, unknown>>("acp://session-update", (e) => {
       const params = e.payload ?? {};
       const sessionId =
@@ -400,6 +425,12 @@ export default function App() {
         const entries = parsePlanEntries(update.entries);
         if (entries) {
           patchSession(sessionId, (s) => ({ ...s, plan: entries }));
+        }
+      } else if (kind === "plan_doc") {
+        const content =
+          typeof update.content === "string" ? update.content : null;
+        if (content) {
+          patchSession(sessionId, (s) => ({ ...s, planDoc: content }));
         }
       } else if (kind === "current_mode_update") {
         const modeId =
@@ -536,6 +567,7 @@ export default function App() {
         modeId: null,
         planDoc: null,
         reviewComments: [],
+        planApproval: null,
       };
       setSessions((prev) => [desk, ...prev]);
       setActiveId(s.sessionId);
@@ -590,6 +622,7 @@ export default function App() {
           modeId: null,
           planDoc: null,
           reviewComments: [],
+          planApproval: null,
         };
         return [desk, ...prev];
       });
@@ -879,6 +912,7 @@ export default function App() {
           modeId: null,
           planDoc: null,
           reviewComments: [],
+          planApproval: null,
         };
         setSessions((prev) => [desk, ...prev]);
         setActiveId(s.sessionId);
@@ -898,6 +932,43 @@ export default function App() {
     }
   };
 
+  const respondPlanApproval = async (
+    sessionId: string,
+    outcome: "approved" | "cancelled" | "abandoned",
+    feedback?: string,
+  ) => {
+    const pending = planApprovalRef.current[sessionId];
+    if (!pending) return;
+    try {
+      await invoke("plan_approval_respond", {
+        requestId: pending.requestId,
+        outcome,
+        feedback: feedback ?? null,
+      });
+      delete planApprovalRef.current[sessionId];
+      patchSession(sessionId, (s) => ({
+        ...s,
+        planApproval: null,
+        modeId: outcome === "approved" ? "default" : s.modeId,
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text:
+              outcome === "approved"
+                ? "Plan approved — agent will implement."
+                : outcome === "abandoned"
+                  ? "Plan abandoned."
+                  : `Plan revision requested${feedback ? `: ${feedback}` : ""}.`,
+          },
+        ],
+      }));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const enterPlanMode = () => {
     const goal = prompt.trim();
     if (!goal) {
@@ -910,12 +981,19 @@ export default function App() {
     void steer(
       `Enter plan mode for this goal:\n\n${goal}\n\n` +
         `Design a clear multi-step plan. Do not implement code yet — wait for my explicit approval. ` +
-        `Use todos / plan entries I can track in the Plan pane.`,
+        `Use todos / plan entries I can track in the Plan pane. When done, call exit_plan_mode so I can approve.`,
     );
     setPrompt("");
   };
 
   const approvePlan = () => {
+    if (!active) return;
+    // Prefer real ACP handshake when the agent is waiting on exit_plan_mode
+    if (active.planApproval) {
+      void respondPlanApproval(active.sessionId, "approved");
+      return;
+    }
+    // Fallback if agent never sent the reverse-request
     void steer(
       "Plan approved. Execute the plan step by step. " +
         "Update todo/plan status as you complete each step. Prefer small, verifiable diffs.",
@@ -923,7 +1001,19 @@ export default function App() {
   };
 
   const revisePlan = () => {
+    if (!active) return;
+    if (active.planApproval) {
+      const fb = prompt.trim() || "Please revise the plan based on my feedback.";
+      void respondPlanApproval(active.sessionId, "cancelled", fb);
+      setPrompt("");
+      return;
+    }
     setPrompt("Please revise the plan: ");
+  };
+
+  const abandonPlan = () => {
+    if (!active?.planApproval) return;
+    void respondPlanApproval(active.sessionId, "abandoned");
   };
 
   const refreshPlanDoc = async () => {
@@ -985,7 +1075,7 @@ export default function App() {
             }`}
           />
           <span className="text-sm font-semibold tracking-wide">Grok Desk</span>
-          <span className="text-xs text-[var(--text-muted)]">v0.4 · Review loop</span>
+          <span className="text-xs text-[var(--text-muted)]">v0.5 · Plan approval</span>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-[var(--text-muted)]">
           <span className="mono">{headerStatus}</span>
@@ -1373,6 +1463,7 @@ export default function App() {
               plan={active.plan}
               modeId={active.modeId}
               planDoc={active.planDoc}
+              planApproval={active.planApproval}
               busy={active.busy}
               open={planOpen}
               onToggle={() => setPlanOpen((v) => !v)}
@@ -1380,6 +1471,7 @@ export default function App() {
               onApprove={approvePlan}
               onRevise={revisePlan}
               onRefreshDoc={() => void refreshPlanDoc()}
+              onAbandonPlan={abandonPlan}
             />
             <DiffPane
               open={diffOpen}

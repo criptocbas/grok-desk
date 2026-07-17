@@ -89,6 +89,16 @@ export type DeskSession = {
   planDoc?: string | null;
   /** Pending review comments to inject on next send */
   reviewComments: ReviewComment[];
+  /** Pending ACP plan approval (x.ai/exit_plan_mode) */
+  planApproval?: PlanApprovalRequest | null;
+};
+
+/** Agent finished planning — Desk must answer approved/cancelled/abandoned. */
+export type PlanApprovalRequest = {
+  requestId: number;
+  sessionId: string;
+  toolCallId?: string | null;
+  planContent?: string | null;
 };
 
 export type GitFileStatus = {

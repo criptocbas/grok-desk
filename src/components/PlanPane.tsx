@@ -1,9 +1,10 @@
-import type { PlanEntry } from "../types";
+import type { PlanApprovalRequest, PlanEntry } from "../types";
 
 type Props = {
   plan: PlanEntry[];
   modeId?: string | null;
   planDoc?: string | null;
+  planApproval?: PlanApprovalRequest | null;
   busy: boolean;
   open: boolean;
   onToggle: () => void;
@@ -11,6 +12,7 @@ type Props = {
   onApprove: () => void;
   onRevise: () => void;
   onRefreshDoc: () => void;
+  onAbandonPlan?: () => void;
 };
 
 function statusIcon(status: string) {
@@ -39,6 +41,7 @@ export function PlanPane({
   plan,
   modeId,
   planDoc,
+  planApproval,
   busy,
   open,
   onToggle,
@@ -46,10 +49,12 @@ export function PlanPane({
   onApprove,
   onRevise,
   onRefreshDoc,
+  onAbandonPlan,
 }: Props) {
   const done = plan.filter((e) => e.status === "completed").length;
   const total = plan.length;
   const inPlanMode = modeId === "plan";
+  const awaitingApproval = !!planApproval;
 
   return (
     <div
@@ -67,7 +72,12 @@ export function PlanPane({
         </span>
         {open && (
           <>
-            {inPlanMode && (
+            {awaitingApproval && (
+              <span className="animate-pulse rounded bg-[var(--warning)]/25 px-1.5 py-0.5 text-[10px] text-[var(--warning)]">
+                approve?
+              </span>
+            )}
+            {inPlanMode && !awaitingApproval && (
               <span className="rounded bg-[var(--thought)]/20 px-1.5 py-0.5 text-[10px] text-[var(--thought)]">
                 plan mode
               </span>
@@ -83,24 +93,58 @@ export function PlanPane({
 
       {open && (
         <>
+          {awaitingApproval && (
+            <div className="space-y-2 border-b border-[var(--warning)]/40 bg-[#2a1f08] p-2">
+              <div className="text-[11px] font-semibold text-[var(--warning)]">
+                Plan ready — approve to implement
+              </div>
+              <p className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+                The agent finished planning and is waiting. This is the real ACP
+                handshake (fixes “client disconnected” on Plan: Exit).
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  onClick={onApprove}
+                  className="rounded bg-[var(--success)] px-2.5 py-1 text-[11px] font-medium text-black"
+                >
+                  Approve & run
+                </button>
+                <button
+                  onClick={onRevise}
+                  className="rounded border border-[var(--warning)] px-2.5 py-1 text-[11px] text-[var(--warning)]"
+                >
+                  Request changes
+                </button>
+                {onAbandonPlan && (
+                  <button
+                    onClick={onAbandonPlan}
+                    className="rounded border border-[var(--border)] px-2.5 py-1 text-[11px] text-[var(--text-muted)]"
+                  >
+                    Abandon
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-1.5 border-b border-[var(--border)] p-2">
             <button
               onClick={onEnterPlanMode}
-              disabled={busy}
+              disabled={busy || awaitingApproval}
               className="rounded border border-[var(--border)] px-2 py-1 text-[11px] hover:border-[var(--thought)] disabled:opacity-40"
             >
               Enter plan mode
             </button>
             <button
               onClick={onApprove}
-              disabled={busy || total === 0}
+              disabled={busy || (!awaitingApproval && total === 0 && !planDoc)}
               className="rounded bg-[var(--success)]/20 px-2 py-1 text-[11px] text-[var(--success)] hover:bg-[var(--success)]/30 disabled:opacity-40"
             >
-              Approve & run
+              {awaitingApproval ? "Approve & run" : "Approve & run"}
             </button>
             <button
               onClick={onRevise}
-              disabled={busy || total === 0}
+              disabled={busy || (!awaitingApproval && total === 0 && !planDoc)}
               className="rounded border border-[var(--border)] px-2 py-1 text-[11px] hover:border-[var(--warning)] disabled:opacity-40"
             >
               Request changes

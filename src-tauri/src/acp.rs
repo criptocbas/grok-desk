@@ -103,6 +103,16 @@ pub struct PermissionRequest {
     pub raw: Value,
 }
 
+/// Pending `x.ai/exit_plan_mode` reverse-request (plan ready for approval).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanApprovalRequest {
+    pub request_id: u64,
+    pub session_id: String,
+    pub tool_call_id: Option<String>,
+    pub plan_content: Option<String>,
+}
+
 pub struct SharedAgent {
     stdin: Mutex<ChildStdin>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
@@ -533,6 +543,27 @@ impl SharedAgent {
         self.write_line(&msg)
     }
 
+    /// Answer `x.ai/exit_plan_mode`: outcome = approved | cancelled | abandoned.
+    pub fn respond_plan_approval(
+        &self,
+        request_id: u64,
+        outcome: &str,
+        feedback: Option<String>,
+    ) -> Result<()> {
+        let mut result = json!({ "outcome": outcome });
+        if let Some(fb) = feedback {
+            if !fb.trim().is_empty() {
+                result["feedback"] = json!(fb);
+            }
+        }
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result
+        });
+        self.write_line(&msg)
+    }
+
     pub fn kill(&self) {
         if let Some(mut child) = self.child.try_lock() {
             let _ = child.kill();
@@ -628,11 +659,27 @@ fn handle_line(agent: &SharedAgent, app: &AppHandle, line: &str) {
     }
 }
 
-fn handle_agent_request(agent: &SharedAgent, app: &AppHandle, id: u64, msg: &Value) {
-    let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
-    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+/// Unwrap gateway ext form: `_x.ai/foo` + nested method/params → (`x.ai/foo`, inner params).
+fn normalize_agent_method(method: &str, params: Value) -> (String, Value) {
+    if let Some(stripped) = method.strip_prefix('_') {
+        if let Some(inner_m) = params.get("method").and_then(|m| m.as_str()) {
+            let inner_p = params
+                .get("params")
+                .cloned()
+                .unwrap_or(Value::Null);
+            return (inner_m.to_string(), inner_p);
+        }
+        return (stripped.to_string(), params);
+    }
+    (method.to_string(), params)
+}
 
-    match method {
+fn handle_agent_request(agent: &SharedAgent, app: &AppHandle, id: u64, msg: &Value) {
+    let raw_method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+    let raw_params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let (method, params) = normalize_agent_method(raw_method, raw_params);
+
+    match method.as_str() {
         "session/request_permission" => {
             let options = params
                 .get("options")
@@ -675,6 +722,47 @@ fn handle_agent_request(agent: &SharedAgent, app: &AppHandle, id: u64, msg: &Val
                 raw: params,
             };
             let _ = app.emit("acp://permission", req);
+        }
+        // Plan ready — client must respond with approved / cancelled / abandoned
+        "x.ai/exit_plan_mode" => {
+            let session_id = params
+                .get("sessionId")
+                .or_else(|| params.get("session_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tool_call_id = params
+                .get("toolCallId")
+                .or_else(|| params.get("tool_call_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let plan_content = params
+                .get("planContent")
+                .or_else(|| params.get("plan_content"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let req = PlanApprovalRequest {
+                request_id: id,
+                session_id: session_id.clone(),
+                tool_call_id,
+                plan_content: plan_content.clone(),
+            };
+            let _ = app.emit("acp://plan-approval", req);
+
+            // Also surface content on the plan pane via session-update-like event
+            if let Some(content) = plan_content {
+                let _ = app.emit(
+                    "acp://session-update",
+                    json!({
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "plan_doc",
+                            "content": content
+                        }
+                    }),
+                );
+            }
         }
         // Kept for correctness if we re-enable clientCapabilities.fs later.
         // ACP requires result field name `content` (not `text`).

@@ -31,6 +31,7 @@
 - [x] Diff pane (`git status` / `git diff` in session cwd)
 - [x] Line comments on `+` lines → injected into next prompt
 - [x] Thought/transcript caps to avoid webview OOM crashes
+- [x] Real ACP plan approval (`x.ai/exit_plan_mode` handshake)
 
 ## Phase 3 — Workspace
 
