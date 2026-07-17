@@ -115,6 +115,73 @@ async fn session_prompt(
         .map_err(|e| e.to_string())
 }
 
+/// `images`: [{ mimeType, data (base64), name? }]
+#[tauri::command]
+async fn session_prompt_with_images(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    images: Vec<PromptImage>,
+) -> Result<Value, String> {
+    if text.trim().is_empty() && images.is_empty() {
+        return Err("Empty prompt".into());
+    }
+    let agent = state.agent()?;
+    let mut blocks = Vec::new();
+    if !text.trim().is_empty() {
+        blocks.push(serde_json::json!({ "type": "text", "text": text }));
+    }
+    for (i, img) in images.iter().enumerate() {
+        let mime = if img.mime_type.is_empty() {
+            "image/png".into()
+        } else {
+            img.mime_type.clone()
+        };
+        // Prefer embedded resource (agent advertises embeddedContext: true).
+        // Also include image block for clients/agents that accept it.
+        let name = img
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("paste-{i}.png"));
+        let uri = format!("file:///grok-desk-paste/{name}");
+        blocks.push(serde_json::json!({
+            "type": "resource",
+            "resource": {
+                "uri": uri,
+                "mimeType": mime,
+                "blob": img.data
+            }
+        }));
+        blocks.push(serde_json::json!({
+            "type": "image",
+            "mimeType": mime,
+            "data": img.data
+        }));
+    }
+    if text.trim().is_empty() && !images.is_empty() {
+        blocks.insert(
+            0,
+            serde_json::json!({
+                "type": "text",
+                "text": format!("[User attached {} image(s)]", images.len())
+            }),
+        );
+    }
+    agent
+        .prompt_blocks(&session_id, blocks)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptImage {
+    mime_type: String,
+    /// Base64 without data: URL prefix
+    data: String,
+    name: Option<String>,
+}
+
 #[tauri::command]
 fn session_cancel(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let agent = state.agent()?;
@@ -194,6 +261,7 @@ pub fn run() {
             session_new,
             session_load,
             session_prompt,
+            session_prompt_with_images,
             session_cancel,
             permission_respond,
             plan_approval_respond,

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { PlanApprovalRequest, PlanEntry } from "../types";
+import { RichText } from "./RichText";
 
 type Props = {
   plan: PlanEntry[];
@@ -51,12 +53,16 @@ export function PlanPane({
   onRefreshDoc,
   onAbandonPlan,
 }: Props) {
+  const [docOpen, setDocOpen] = useState(false);
   const done = plan.filter((e) => e.status === "completed").length;
   const total = plan.length;
   const inPlanMode = modeId === "plan";
   const awaitingApproval = !!planApproval;
+  const fullDoc =
+    planApproval?.planContent || planDoc || null;
 
   return (
+    <>
     <div
       className={`flex shrink-0 flex-col border-l border-[var(--border)] bg-[var(--bg-panel)] transition-all ${
         open ? "w-80" : "w-10"
@@ -194,19 +200,72 @@ export function PlanPane({
               </ul>
             )}
 
-            {planDoc && (
-              <details className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg)]">
-                <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--text-muted)]">
-                  plan.md
-                </summary>
-                <pre className="mono max-h-64 overflow-auto whitespace-pre-wrap border-t border-[var(--border)] px-2 py-2 text-[10px] leading-relaxed text-[var(--text-muted)]">
-                  {planDoc}
+            {fullDoc && (
+              <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg)]">
+                <div className="flex items-center justify-between border-b border-[var(--border)] px-2 py-1.5">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)]">
+                    plan.md
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDocOpen(true)}
+                    className="rounded px-2 py-0.5 text-[11px] text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                  >
+                    Expand
+                  </button>
+                </div>
+                <pre className="mono max-h-40 overflow-auto whitespace-pre-wrap px-2 py-2 text-[10px] leading-relaxed text-[var(--text-muted)]">
+                  {fullDoc.slice(0, 1200)}
+                  {fullDoc.length > 1200 ? "\n…" : ""}
                 </pre>
-              </details>
+              </div>
             )}
           </div>
         </>
       )}
     </div>
+
+    {docOpen && fullDoc && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+        onClick={() => setDocOpen(false)}
+        onKeyDown={(e) => e.key === "Escape" && setDocOpen(false)}
+        role="presentation"
+      >
+        <div
+          className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+          role="dialog"
+          aria-label="Full plan document"
+        >
+          <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3">
+            <span className="text-sm font-semibold">Plan document</span>
+            <button
+              type="button"
+              onClick={() => setDocOpen(false)}
+              className="ml-auto rounded border border-[var(--border)] px-3 py-1 text-xs hover:border-[var(--accent)]"
+            >
+              Close
+            </button>
+            {awaitingApproval && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDocOpen(false);
+                  onApprove();
+                }}
+                className="rounded bg-[var(--success)] px-3 py-1 text-xs font-medium text-black"
+              >
+                Approve & run
+              </button>
+            )}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            <RichText text={fullDoc} />
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

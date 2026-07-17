@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -17,6 +24,7 @@ import type {
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
+import { RichText } from "./components/RichText";
 
 /** Prevent webview OOM from multi-hour thought streams / session replay. */
 const MAX_THOUGHT_CHARS = 6_000;
@@ -62,65 +70,13 @@ function formatTime(iso?: string | null) {
   }
 }
 
-/** Lightweight markdown-ish rendering for assistant bubbles. */
-function RichText({ text }: { text: string }) {
-  const blocks = text.split(/(```[\s\S]*?```)/g);
-  return (
-    <div className="space-y-2 text-sm leading-relaxed">
-      {blocks.map((block, i) => {
-        if (block.startsWith("```")) {
-          const inner = block.replace(/^```\w*\n?/, "").replace(/```$/, "");
-          return (
-            <pre
-              key={i}
-              className="mono overflow-x-auto rounded-md bg-black/40 px-3 py-2 text-[12px] text-[var(--tool)]"
-            >
-              {inner}
-            </pre>
-          );
-        }
-        return (
-          <div key={i} className="whitespace-pre-wrap">
-            {block.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, j) => {
-              if (part.startsWith("**") && part.endsWith("**")) {
-                return (
-                  <strong key={j} className="font-semibold text-white">
-                    {part.slice(2, -2)}
-                  </strong>
-                );
-              }
-              if (part.startsWith("`") && part.endsWith("`")) {
-                return (
-                  <code
-                    key={j}
-                    className="mono rounded bg-white/10 px-1 py-0.5 text-[12px] text-[var(--tool)]"
-                  >
-                    {part.slice(1, -1)}
-                  </code>
-                );
-              }
-              if (part.startsWith("### ")) {
-                return (
-                  <div key={j} className="mt-2 text-[13px] font-semibold text-white">
-                    {part.slice(4)}
-                  </div>
-                );
-              }
-              if (part.startsWith("## ")) {
-                return (
-                  <div key={j} className="mt-2 text-sm font-semibold text-white">
-                    {part.slice(3)}
-                  </div>
-                );
-              }
-              return <span key={j}>{part}</span>;
-            })}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+type PendingImage = {
+  id: string;
+  mimeType: string;
+  data: string;
+  name: string;
+  previewUrl: string;
+};
 
 export default function App() {
   const [grok, setGrok] = useState<GrokStatus | null>(null);
@@ -142,8 +98,10 @@ export default function App() {
   const [gitSelected, setGitSelected] = useState<string | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [stderrTail, setStderrTail] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   /** Avoid stale closures when answering plan approval reverse-requests. */
   const planApprovalRef = useRef<Record<string, PlanApprovalRequest>>({});
   // Per-session streaming buffers keyed by sessionId
@@ -700,12 +658,50 @@ export default function App() {
     delete streamBuf.current[sessionId];
   };
 
+  const addImageFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    for (const file of list) {
+      const dataUrl = await readFileAsDataUrl(file);
+      const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) continue;
+      const previewUrl = dataUrl;
+      setPendingImages((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          mimeType: m[1] || file.type || "image/png",
+          data: m[2],
+          name: file.name || `paste-${Date.now()}.png`,
+          previewUrl,
+        },
+      ]);
+    }
+  };
+
+  const onComposerPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) {
+      e.preventDefault();
+      void addImageFiles(files);
+    }
+  };
+
   const send = async () => {
-    if (!active || !prompt.trim() || active.busy) return;
+    if (!active || active.busy) return;
+    if (!prompt.trim() && pendingImages.length === 0) return;
     const userText = prompt.trim();
     let text = userText;
     const sessionId = active.sessionId;
     const comments = active.reviewComments ?? [];
+    const images = [...pendingImages];
     if (comments.length > 0) {
       const block = comments
         .map((c) => {
@@ -718,9 +714,10 @@ export default function App() {
         })
         .join("\n");
       text =
-        `${text}\n\n## Review comments (apply these fixes)\n${block}`;
+        `${text || "Please address the review comments."}\n\n## Review comments (apply these fixes)\n${block}`;
     }
     setPrompt("");
+    setPendingImages([]);
     setError(null);
     const buf = ensureBuf(sessionId);
     buf.assistant = "";
@@ -728,9 +725,20 @@ export default function App() {
     buf.user = text;
     buf.aId = null;
     buf.tId = null;
-    // Stable id so ACP user_message_chunk echo can merge instead of duplicating
     const userMsgId = uid();
     buf.uId = userMsgId;
+
+    const displayBits = [
+      userText || (images.length ? "[image]" : ""),
+      comments.length
+        ? `(${comments.length} review note${comments.length === 1 ? "" : "s"})`
+        : "",
+      images.length
+        ? `(${images.length} image${images.length === 1 ? "" : "s"})`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
 
     patchSession(sessionId, (s) => ({
       ...s,
@@ -741,24 +749,36 @@ export default function App() {
         {
           id: userMsgId,
           role: "user",
-          text:
-            comments.length > 0
-              ? `${userText}  ·  (${comments.length} review note${comments.length === 1 ? "" : "s"} attached)`
-              : userText,
+          text: displayBits || userText || text,
         },
       ],
-      // Promote title from first user message if still folder name
       title:
-        s.title === folderName(s.cwd) && userText.length < 60
+        s.title === folderName(s.cwd) && userText.length > 0 && userText.length < 60
           ? userText
           : s.title,
     }));
 
     try {
-      const result = await invoke<Record<string, unknown>>("session_prompt", {
-        sessionId,
-        text,
-      });
+      let result: Record<string, unknown>;
+      if (images.length > 0) {
+        result = await invoke<Record<string, unknown>>(
+          "session_prompt_with_images",
+          {
+            sessionId,
+            text: text || "See attached image(s).",
+            images: images.map((img) => ({
+              mimeType: img.mimeType,
+              data: img.data,
+              name: img.name,
+            })),
+          },
+        );
+      } else {
+        result = await invoke<Record<string, unknown>>("session_prompt", {
+          sessionId,
+          text,
+        });
+      }
       const meta = (result?._meta ?? result) as Record<string, unknown> | undefined;
       const out =
         typeof meta?.outputTokens === "number"
@@ -766,7 +786,6 @@ export default function App() {
           : "";
       const model =
         typeof meta?.modelId === "string" ? ` · ${meta.modelId}` : "";
-      // Reset stream ids for the next turn
       const b = ensureBuf(sessionId);
       b.assistant = "";
       b.thought = "";
@@ -1021,7 +1040,7 @@ export default function App() {
             }`}
           />
           <span className="text-sm font-semibold tracking-wide">Grok Desk</span>
-          <span className="text-xs text-[var(--text-muted)]">v0.5 · Plan approval</span>
+          <span className="text-xs text-[var(--text-muted)]">v0.6 · Polish</span>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-[var(--text-muted)]">
           <span className="mono">{headerStatus}</span>
@@ -1336,37 +1355,71 @@ export default function App() {
               )}
 
               <div className="border-t border-[var(--border)] bg-[var(--bg-elevated)] p-3">
-                <div className="mx-auto flex max-w-3xl gap-2">
-                  <textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        void send();
-                      }
-                    }}
-                    disabled={active.busy}
-                    rows={2}
-                    placeholder="Message Grok… (Enter to send)"
-                    className="min-h-[52px] flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-50"
-                  />
-                  <div className="flex flex-col gap-1">
-                    <button
-                      onClick={send}
-                      disabled={active.busy || !prompt.trim()}
-                      className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-40"
-                    >
-                      {active.busy ? "…" : "Send"}
-                    </button>
-                    {active.busy && (
+                <div className="mx-auto max-w-3xl">
+                  {pendingImages.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      {pendingImages.map((img) => (
+                        <div
+                          key={img.id}
+                          className="relative h-16 w-16 overflow-hidden rounded-md border border-[var(--border)]"
+                        >
+                          <img
+                            src={img.previewUrl}
+                            alt={img.name}
+                            className="h-full w-full object-cover"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPendingImages((prev) =>
+                                prev.filter((p) => p.id !== img.id),
+                              )
+                            }
+                            className="absolute right-0.5 top-0.5 rounded bg-black/70 px-1 text-[10px] text-white"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <textarea
+                      ref={composerRef}
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      onPaste={onComposerPaste}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void send();
+                        }
+                      }}
+                      disabled={active.busy}
+                      rows={2}
+                      placeholder="Message Grok… (Enter send · paste screenshots)"
+                      className="min-h-[52px] flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                    />
+                    <div className="flex flex-col gap-1">
                       <button
-                        onClick={cancel}
-                        className="rounded-lg border border-[var(--border)] px-4 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+                        onClick={send}
+                        disabled={
+                          active.busy ||
+                          (!prompt.trim() && pendingImages.length === 0)
+                        }
+                        className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-40"
                       >
-                        Stop
+                        {active.busy ? "…" : "Send"}
                       </button>
-                    )}
+                      {active.busy && (
+                        <button
+                          onClick={cancel}
+                          className="rounded-lg border border-[var(--border)] px-4 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+                        >
+                          Stop
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1544,4 +1597,13 @@ function MessageBubble({ item }: { item: ChatItem }) {
       <RichText text={item.text} />
     </div>
   );
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }

@@ -411,8 +411,17 @@ impl SharedAgent {
     }
 
     pub async fn prompt(&self, session_id: &str, text: &str) -> Result<Value> {
+        self.prompt_blocks(session_id, vec![json!({ "type": "text", "text": text })])
+            .await
+    }
+
+    /// Prompt with mixed content blocks (text, image, embedded resources).
+    pub async fn prompt_blocks(&self, session_id: &str, blocks: Vec<Value>) -> Result<Value> {
         if session_id.trim().is_empty() {
             return Err(AcpError::Msg("session_id required".into()));
+        }
+        if blocks.is_empty() {
+            return Err(AcpError::Msg("empty prompt".into()));
         }
         *self.session_id.lock() = Some(session_id.to_string());
 
@@ -420,7 +429,7 @@ impl SharedAgent {
             "session/prompt",
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": text }]
+                "prompt": blocks
             }),
         )
         .await
