@@ -60,23 +60,37 @@ export default function App() {
   }, [refreshStatus]);
 
   useEffect(() => {
+    // React StrictMode remounts effects in dev. listen() is async, so a naive
+    // cleanup can miss the first unlisten and leave *two* handlers → doubled
+    // streaming text ("I'llI'll look look…"). Track cancellation carefully.
+    let cancelled = false;
     const unsubs: Array<() => void> = [];
 
-    listen<{ running: boolean }>("acp://status", (e) => {
+    const track = (unlisten: () => void) => {
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+      unsubs.push(unlisten);
+    };
+
+    void listen<{ running: boolean }>("acp://status", (e) => {
       setRunning(!!e.payload?.running);
-    }).then((u) => unsubs.push(u));
+    }).then(track);
 
-    listen<string>("acp://stderr", (e) => {
+    void listen<string>("acp://stderr", (e) => {
       setStderrTail((prev) => [...prev.slice(-40), e.payload]);
-    }).then((u) => unsubs.push(u));
+    }).then(track);
 
-    listen<PermissionRequest>("acp://permission", (e) => {
+    void listen<PermissionRequest>("acp://permission", (e) => {
       setPermissions((prev) => [...prev, e.payload]);
-    }).then((u) => unsubs.push(u));
+    }).then(track);
 
-    listen<Record<string, unknown>>("acp://session-update", (e) => {
+    void listen<Record<string, unknown>>("acp://session-update", (e) => {
       const update = (e.payload?.update ?? e.payload) as Record<string, unknown>;
-      const kind = (update?.sessionUpdate ?? update?.session_update) as string | undefined;
+      const kind = (update?.sessionUpdate ?? update?.session_update) as
+        | string
+        | undefined;
       if (!kind) return;
 
       if (kind === "agent_message_chunk") {
@@ -85,12 +99,10 @@ export default function App() {
         assistantBuf.current += chunk;
         const id = assistantId.current ?? uid();
         assistantId.current = id;
+        const text = assistantBuf.current;
         setItems((prev) => {
           const rest = prev.filter((i) => i.id !== id);
-          return [
-            ...rest,
-            { id, role: "assistant", text: assistantBuf.current },
-          ];
+          return [...rest, { id, role: "assistant", text }];
         });
       } else if (kind === "agent_thought_chunk") {
         const chunk = extractText(update.content);
@@ -98,11 +110,12 @@ export default function App() {
         thoughtBuf.current += chunk;
         const id = thoughtId.current ?? uid();
         thoughtId.current = id;
+        const text = thoughtBuf.current;
         setItems((prev) => {
           const rest = prev.filter((i) => i.id !== id);
           return [
             ...rest,
-            { id, role: "thought", text: thoughtBuf.current, meta: "thinking" },
+            { id, role: "thought", text, meta: "thinking" },
           ];
         });
       } else if (kind === "tool_call") {
@@ -128,16 +141,27 @@ export default function App() {
             },
           ];
         });
-        setItems((prev) => [
-          ...prev,
-          {
-            id: uid(),
-            role: "tool",
-            text: title,
-            meta: status,
-            status,
-          },
-        ]);
+        // One transcript line per toolCallId; updates mutate status below.
+        setItems((prev) => {
+          const existing = prev.find((i) => i.id === `tool-${id}`);
+          if (existing) {
+            return prev.map((i) =>
+              i.id === `tool-${id}`
+                ? { ...i, text: title, meta: status, status }
+                : i,
+            );
+          }
+          return [
+            ...prev,
+            {
+              id: `tool-${id}`,
+              role: "tool",
+              text: title,
+              meta: status,
+              status,
+            },
+          ];
+        });
       } else if (kind === "tool_call_update") {
         const id =
           (update.toolCallId as string) ||
@@ -147,6 +171,11 @@ export default function App() {
         if (id) {
           setTools((prev) =>
             prev.map((t) => (t.id === id ? { ...t, status, raw: update } : t)),
+          );
+          setItems((prev) =>
+            prev.map((i) =>
+              i.id === `tool-${id}` ? { ...i, meta: status, status } : i,
+            ),
           );
         }
       } else if (kind === "plan") {
@@ -161,9 +190,12 @@ export default function App() {
           },
         ]);
       }
-    }).then((u) => unsubs.push(u));
+    }).then(track);
 
-    return () => unsubs.forEach((u) => u());
+    return () => {
+      cancelled = true;
+      unsubs.forEach((u) => u());
+    };
   }, []);
 
   useEffect(() => {
@@ -237,13 +269,22 @@ export default function App() {
     thoughtId.current = null;
     setItems((prev) => [...prev, { id: uid(), role: "user", text }]);
     try {
-      const result = await invoke("session_prompt", { text });
+      const result = await invoke<Record<string, unknown>>("session_prompt", {
+        text,
+      });
+      const meta = (result?._meta ?? result) as Record<string, unknown> | undefined;
+      const out =
+        typeof meta?.outputTokens === "number"
+          ? ` · ${meta.outputTokens} out tokens`
+          : "";
+      const model =
+        typeof meta?.modelId === "string" ? ` · ${meta.modelId}` : "";
       setItems((prev) => [
         ...prev,
         {
           id: uid(),
           role: "system",
-          text: `Turn complete · ${JSON.stringify(result)?.slice(0, 120) ?? "ok"}`,
+          text: `Turn complete${model}${out}`,
           meta: "stop",
         },
       ]);
