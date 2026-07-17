@@ -878,60 +878,6 @@ export default function App() {
     }
   };
 
-  const browseAndOpenSession = async () => {
-    try {
-      const selected = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Open project folder for a new session",
-        defaultPath: cwd || undefined,
-      });
-      if (typeof selected === "string" && selected.length > 0) {
-        setCwd(selected);
-        // openSession reads cwd from state which may not have flushed yet
-        setError(null);
-        if (!running) await connect();
-        const s = await invoke<SessionInfo>("session_new", { cwd: selected });
-        const desk: DeskSession = {
-          sessionId: s.sessionId,
-          cwd: s.cwd,
-          title: s.title || folderName(s.cwd),
-          modelId: s.modelId,
-          items: [
-            {
-              id: uid(),
-              role: "system",
-              text: `Session ${shortId(s.sessionId)} · ${s.cwd}`,
-            },
-          ],
-          tools: [],
-          permissions: [],
-          busy: false,
-          createdAt: Date.now(),
-          plan: [],
-          modeId: null,
-          planDoc: null,
-          reviewComments: [],
-          planApproval: null,
-        };
-        setSessions((prev) => [desk, ...prev]);
-        setActiveId(s.sessionId);
-        streamBuf.current[s.sessionId] = {
-          assistant: "",
-          thought: "",
-          user: "",
-          aId: null,
-          tId: null,
-          uId: null,
-        };
-        void refreshGit(s.cwd);
-        await refreshDisk();
-      }
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
   const respondPlanApproval = async (
     sessionId: string,
     outcome: "approved" | "cancelled" | "abandoned",
@@ -1143,29 +1089,19 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void browseFolder()}
-                title="Browse for folder"
+                title="Choose folder"
                 className="shrink-0 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-sm hover:border-[var(--accent)]"
               >
                 …
               </button>
             </div>
-            <div className="flex gap-1">
-              <button
-                onClick={openSession}
-                disabled={!cwd}
-                className="min-w-0 flex-1 rounded-md border border-[var(--border)] px-2 py-2 text-sm hover:border-[var(--accent)] disabled:opacity-40"
-              >
-                + New session
-              </button>
-              <button
-                type="button"
-                onClick={() => void browseAndOpenSession()}
-                title="Browse folder and open a new session"
-                className="shrink-0 rounded-md bg-[var(--accent)]/15 px-3 py-2 text-sm text-[var(--accent)] hover:bg-[var(--accent)]/25"
-              >
-                Browse…
-              </button>
-            </div>
+            <button
+              onClick={openSession}
+              disabled={!cwd}
+              className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-[var(--accent)] disabled:opacity-40"
+            >
+              + New session
+            </button>
           </div>
 
           {/* Open sessions */}
