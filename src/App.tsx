@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AgentInfo,
   ChatItem,
@@ -828,12 +829,90 @@ export default function App() {
     }
   };
 
+  const browseFolder = async () => {
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Open project folder",
+        defaultPath: cwd || undefined,
+      });
+      if (typeof selected === "string" && selected.length > 0) {
+        setCwd(selected);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const browseAndOpenSession = async () => {
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Open project folder for a new session",
+        defaultPath: cwd || undefined,
+      });
+      if (typeof selected === "string" && selected.length > 0) {
+        setCwd(selected);
+        // openSession reads cwd from state which may not have flushed yet
+        setError(null);
+        if (!running) await connect();
+        const s = await invoke<SessionInfo>("session_new", { cwd: selected });
+        const desk: DeskSession = {
+          sessionId: s.sessionId,
+          cwd: s.cwd,
+          title: s.title || folderName(s.cwd),
+          modelId: s.modelId,
+          items: [
+            {
+              id: uid(),
+              role: "system",
+              text: `Session ${shortId(s.sessionId)} · ${s.cwd}`,
+            },
+          ],
+          tools: [],
+          permissions: [],
+          busy: false,
+          createdAt: Date.now(),
+          plan: [],
+          modeId: null,
+          planDoc: null,
+          reviewComments: [],
+        };
+        setSessions((prev) => [desk, ...prev]);
+        setActiveId(s.sessionId);
+        streamBuf.current[s.sessionId] = {
+          assistant: "",
+          thought: "",
+          user: "",
+          aId: null,
+          tId: null,
+          uId: null,
+        };
+        void refreshGit(s.cwd);
+        await refreshDisk();
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const enterPlanMode = () => {
+    const goal = prompt.trim();
+    if (!goal) {
+      setError(
+        "Type your goal in the message box first, then click Enter plan mode.",
+      );
+      return;
+    }
+    setError(null);
     void steer(
-      "Enter plan mode. Design a clear multi-step plan for the current goal. " +
-        "Do not implement code yet — wait for my explicit approval. " +
-        "Use todos / plan entries I can track.",
+      `Enter plan mode for this goal:\n\n${goal}\n\n` +
+        `Design a clear multi-step plan. Do not implement code yet — wait for my explicit approval. ` +
+        `Use todos / plan entries I can track in the Plan pane.`,
     );
+    setPrompt("");
   };
 
   const approvePlan = () => {
@@ -962,20 +1041,41 @@ export default function App() {
             <div className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
               Project folder
             </div>
-            <input
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-              className="mono w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[11px] outline-none focus:border-[var(--accent)]"
-              placeholder="/path/to/project"
-              spellCheck={false}
-            />
-            <button
-              onClick={openSession}
-              disabled={!cwd}
-              className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-[var(--accent)] disabled:opacity-40"
-            >
-              + New session
-            </button>
+            <div className="flex gap-1">
+              <input
+                value={cwd}
+                onChange={(e) => setCwd(e.target.value)}
+                title={cwd}
+                className="mono min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[11px] outline-none focus:border-[var(--accent)]"
+                placeholder="/path/to/project"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                onClick={() => void browseFolder()}
+                title="Browse for folder"
+                className="shrink-0 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-sm hover:border-[var(--accent)]"
+              >
+                …
+              </button>
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={openSession}
+                disabled={!cwd}
+                className="min-w-0 flex-1 rounded-md border border-[var(--border)] px-2 py-2 text-sm hover:border-[var(--accent)] disabled:opacity-40"
+              >
+                + New session
+              </button>
+              <button
+                type="button"
+                onClick={() => void browseAndOpenSession()}
+                title="Browse folder and open a new session"
+                className="shrink-0 rounded-md bg-[var(--accent)]/15 px-3 py-2 text-sm text-[var(--accent)] hover:bg-[var(--accent)]/25"
+              >
+                Browse…
+              </button>
+            </div>
           </div>
 
           {/* Open sessions */}

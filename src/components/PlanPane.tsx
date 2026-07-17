@@ -117,10 +117,10 @@ export function PlanPane({
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {total === 0 && !planDoc ? (
               <p className="px-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
-                When Grok plans a multi-step task, steps appear here (ACP{" "}
-                <code className="mono">plan</code> updates / todos). Use{" "}
-                <strong>Enter plan mode</strong> before big work so it designs
-                first, then <strong>Approve & run</strong>.
+                Type your goal in the message box, then click{" "}
+                <strong>Enter plan mode</strong>. Steps from ACP{" "}
+                <code className="mono">plan</code> / todos show here. When it
+                looks right, <strong>Approve & run</strong>.
               </p>
             ) : (
               <ul className="space-y-1.5">
