@@ -126,7 +126,17 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Per-session streaming buffers keyed by sessionId
   const streamBuf = useRef<
-    Record<string, { assistant: string; thought: string; aId: string | null; tId: string | null }>
+    Record<
+      string,
+      {
+        assistant: string;
+        thought: string;
+        user: string;
+        aId: string | null;
+        tId: string | null;
+        uId: string | null;
+      }
+    >
   >({});
 
   const active = useMemo(
@@ -148,8 +158,10 @@ export default function App() {
       streamBuf.current[sessionId] = {
         assistant: "",
         thought: "",
+        user: "",
         aId: null,
         tId: null,
+        uId: null,
       };
     }
     return streamBuf.current[sessionId];
@@ -221,32 +233,71 @@ export default function App() {
         | undefined;
       if (!kind) return;
 
-      if (kind === "agent_message_chunk" || kind === "user_message_chunk") {
+      if (kind === "agent_message_chunk") {
         const chunk = extractText(update.content);
         if (!chunk) return;
-        const role = kind === "user_message_chunk" ? "user" : "assistant";
-        if (role === "assistant") {
-          const buf = ensureBuf(sessionId);
-          buf.assistant += chunk;
-          const id = buf.aId ?? uid();
-          buf.aId = id;
-          const text = buf.assistant;
-          patchSession(sessionId, (s) => {
-            const rest = s.items.filter((i) => i.id !== id);
-            return {
-              ...s,
-              items: [...rest, { id, role: "assistant", text }],
-            };
-          });
-        } else {
-          patchSession(sessionId, (s) => ({
+        const buf = ensureBuf(sessionId);
+        buf.assistant += chunk;
+        const id = buf.aId ?? uid();
+        buf.aId = id;
+        const text = buf.assistant;
+        patchSession(sessionId, (s) => {
+          const rest = s.items.filter((i) => i.id !== id);
+          return {
             ...s,
-            items: [
-              ...s.items,
-              { id: uid(), role: "user", text: chunk },
-            ],
-          }));
-        }
+            items: [...rest, { id, role: "assistant", text }],
+          };
+        });
+      } else if (kind === "user_message_chunk") {
+        // Avoid doubles: we already add the user bubble optimistically on Send.
+        // ACP often echoes the same full text as user_message_chunk (live turn
+        // or session/load). Merge into the last user item when it matches.
+        const chunk = extractText(update.content);
+        if (!chunk) return;
+        patchSession(sessionId, (s) => {
+          const items = s.items;
+          // Prefer last user message (most recent turn / optimistic bubble)
+          let idx = -1;
+          for (let i = items.length - 1; i >= 0; i--) {
+            if (items[i].role === "user") {
+              idx = i;
+              break;
+            }
+          }
+          if (idx >= 0) {
+            const last = items[idx];
+            // Exact duplicate of optimistic send or full replay of same message
+            if (last.text === chunk) return s;
+            // Cumulative stream replacing shorter prefix
+            if (chunk.startsWith(last.text)) {
+              const next = items.slice();
+              next[idx] = { ...last, text: chunk };
+              return { ...s, items: next };
+            }
+            // Delta stream: append if not already contained
+            if (!last.text.includes(chunk)) {
+              const next = items.slice();
+              next[idx] = { ...last, text: last.text + chunk };
+              return { ...s, items: next };
+            }
+            return s;
+          }
+          // History load with no optimistic bubble yet
+          const buf = ensureBuf(sessionId);
+          if (!buf.uId) {
+            buf.uId = uid();
+            buf.user = chunk;
+          } else {
+            buf.user += chunk;
+          }
+          const id = buf.uId;
+          const text = buf.user;
+          const rest = items.filter((i) => i.id !== id);
+          return {
+            ...s,
+            items: [...rest, { id, role: "user", text }],
+          };
+        });
       } else if (kind === "agent_thought_chunk") {
         const chunk = extractText(update.content);
         if (!chunk) return;
@@ -388,8 +439,10 @@ export default function App() {
       streamBuf.current[s.sessionId] = {
         assistant: "",
         thought: "",
+        user: "",
         aId: null,
         tId: null,
+        uId: null,
       };
       await refreshDisk();
     } catch (e) {
@@ -439,8 +492,10 @@ export default function App() {
       streamBuf.current[d.sessionId] = {
         assistant: "",
         thought: "",
+        user: "",
         aId: null,
         tId: null,
+        uId: null,
       };
       setCwd(d.cwd);
 
@@ -486,13 +541,17 @@ export default function App() {
     const buf = ensureBuf(sessionId);
     buf.assistant = "";
     buf.thought = "";
+    buf.user = text;
     buf.aId = null;
     buf.tId = null;
+    // Stable id so ACP user_message_chunk echo can merge instead of duplicating
+    const userMsgId = uid();
+    buf.uId = userMsgId;
 
     patchSession(sessionId, (s) => ({
       ...s,
       busy: true,
-      items: [...s.items, { id: uid(), role: "user", text }],
+      items: [...s.items, { id: userMsgId, role: "user", text }],
       // Promote title from first user message if still folder name
       title:
         s.title === folderName(s.cwd) && text.length < 60
@@ -512,6 +571,15 @@ export default function App() {
           : "";
       const model =
         typeof meta?.modelId === "string" ? ` · ${meta.modelId}` : "";
+      // Reset stream ids for the next turn
+      const b = ensureBuf(sessionId);
+      b.assistant = "";
+      b.thought = "";
+      b.user = "";
+      b.aId = null;
+      b.tId = null;
+      b.uId = null;
+
       patchSession(sessionId, (s) => ({
         ...s,
         busy: false,
