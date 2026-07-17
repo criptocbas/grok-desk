@@ -1,6 +1,6 @@
 [package]
 name = "grok-desk"
-version = "0.3.0"
+version = "0.4.0"
 description = "Grok Build desktop shell — session mission control for the coding agent"
 authors = ["you"]
 edition = "2021"

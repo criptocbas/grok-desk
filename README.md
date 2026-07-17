@@ -4,18 +4,18 @@
 
 Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://agentclientprotocol.com) to `grok agent stdio`.
 
-![Phase 2a](https://img.shields.io/badge/phase-2a%20plan%20pane-00a8ff)
+![Phase 2](https://img.shields.io/badge/phase-2%20review%20loop-00a8ff)
 
-## Features (v0.3)
+## Features (v0.4)
 
 - Connect to Grok Build (`grok agent stdio`) with SuperGrok Heavy
 - **Multi-session mission control** — parallel tabs on one agent process
 - Resume recent work from `~/.grok/sessions` (Recents)
-- **Plan pane** — live checklist from ACP `plan` / todos; Enter plan mode · Approve · Revise
-- Stream assistant messages, thoughts, and tool calls per session
-- Permission cards for tool approval
-- Cancel an in-flight turn
-- Lightweight markdown rendering
+- **Plan pane** — live checklist; Enter plan mode · Approve · Revise
+- **Diff pane** — git status/diff in session cwd; click `+` lines to leave review notes
+- Review notes inject into the next prompt automatically
+- Stream chat / thoughts / tools (thoughts collapsed + size-capped to avoid freezes)
+- Permission cards, cancel turn, light markdown
 
 ## Requirements
 

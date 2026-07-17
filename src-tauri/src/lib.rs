@@ -1,9 +1,11 @@
 mod acp;
+mod git;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use acp::{AgentInfo, DiskSession, GrokStatus, SessionInfo, SharedAgent};
+use git::{GitDiffResult, GitStatusResult};
 use parking_lot::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
@@ -142,6 +144,16 @@ fn read_plan_doc(session_id: String, cwd: String) -> Option<String> {
 }
 
 #[tauri::command]
+fn git_status(cwd: String) -> GitStatusResult {
+    git::git_status(&cwd)
+}
+
+#[tauri::command]
+fn git_diff(cwd: String, path: Option<String>) -> GitDiffResult {
+    git::git_diff(&cwd, path)
+}
+
+#[tauri::command]
 fn default_cwd() -> String {
     std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -168,6 +180,8 @@ pub fn run() {
             permission_respond,
             list_disk_sessions,
             read_plan_doc,
+            git_status,
+            git_diff,
             default_cwd,
         ])
         .setup(|app| {

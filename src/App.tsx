@@ -6,12 +6,20 @@ import type {
   ChatItem,
   DeskSession,
   DiskSession,
+  GitFileStatus,
   GrokStatus,
   PermissionRequest,
   PlanEntry,
+  ReviewComment,
   SessionInfo,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
+import { DiffPane } from "./components/DiffPane";
+
+/** Prevent webview OOM from multi-hour thought streams / session replay. */
+const MAX_THOUGHT_CHARS = 6_000;
+const MAX_ASSISTANT_CHARS = 400_000;
+const MAX_TRANSCRIPT_ITEMS = 400;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -125,6 +133,13 @@ export default function App() {
   const [diskSessions, setDiskSessions] = useState<DiskSession[]>([]);
   const [showRecents, setShowRecents] = useState(false);
   const [planOpen, setPlanOpen] = useState(true);
+  const [diffOpen, setDiffOpen] = useState(true);
+  const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
+  const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
+  const [gitPatch, setGitPatch] = useState("");
+  const [gitSelected, setGitSelected] = useState<string | null>(null);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [gitLoading, setGitLoading] = useState(false);
   const [stderrTail, setStderrTail] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Per-session streaming buffers keyed by sessionId
@@ -150,11 +165,63 @@ export default function App() {
   const patchSession = useCallback(
     (sessionId: string, fn: (s: DeskSession) => DeskSession) => {
       setSessions((prev) =>
-        prev.map((s) => (s.sessionId === sessionId ? fn(s) : s)),
+        prev.map((s) => {
+          if (s.sessionId !== sessionId) return s;
+          const next = fn(s);
+          // Cap transcript length so resume/long runs don't blow the webview
+          if (next.items.length > MAX_TRANSCRIPT_ITEMS) {
+            return {
+              ...next,
+              items: next.items.slice(-MAX_TRANSCRIPT_ITEMS),
+            };
+          }
+          return next;
+        }),
       );
     },
     [],
   );
+
+  const refreshGit = useCallback(async (cwd: string, path?: string | null) => {
+    if (!cwd) return;
+    setGitLoading(true);
+    setGitError(null);
+    try {
+      const st = await invoke<{
+        isRepo: boolean;
+        files: GitFileStatus[];
+        error?: string | null;
+      }>("git_status", { cwd });
+      setGitIsRepo(st.isRepo);
+      setGitFiles(st.files ?? []);
+      if (st.error) setGitError(st.error);
+      const select =
+        path ??
+        gitSelected ??
+        st.files?.[0]?.path ??
+        null;
+      if (select && st.isRepo) {
+        setGitSelected(select);
+        const d = await invoke<{
+          path: string | null;
+          patch: string;
+          isRepo: boolean;
+          error?: string | null;
+        }>("git_diff", { cwd, path: select });
+        setGitPatch(d.patch ?? "");
+        if (d.error) setGitError(d.error);
+      } else if (!st.isRepo) {
+        setGitPatch("");
+        setGitSelected(null);
+      } else {
+        setGitPatch("");
+      }
+    } catch (e) {
+      setGitError(String(e));
+    } finally {
+      setGitLoading(false);
+    }
+  }, [gitSelected]);
 
   const ensureBuf = (sessionId: string) => {
     if (!streamBuf.current[sessionId]) {
@@ -241,6 +308,9 @@ export default function App() {
         if (!chunk) return;
         const buf = ensureBuf(sessionId);
         buf.assistant += chunk;
+        if (buf.assistant.length > MAX_ASSISTANT_CHARS) {
+          buf.assistant = buf.assistant.slice(-MAX_ASSISTANT_CHARS);
+        }
         const id = buf.aId ?? uid();
         buf.aId = id;
         const text = buf.assistant;
@@ -306,6 +376,12 @@ export default function App() {
         if (!chunk) return;
         const buf = ensureBuf(sessionId);
         buf.thought += chunk;
+        // Cap hard — unbounded thoughts OOM the webview (crash mid-run).
+        if (buf.thought.length > MAX_THOUGHT_CHARS) {
+          buf.thought =
+            "…[thought truncated]…\n" +
+            buf.thought.slice(-MAX_THOUGHT_CHARS);
+        }
         const id = buf.tId ?? uid();
         buf.tId = id;
         const text = buf.thought;
@@ -458,9 +534,11 @@ export default function App() {
         plan: [],
         modeId: null,
         planDoc: null,
+        reviewComments: [],
       };
       setSessions((prev) => [desk, ...prev]);
       setActiveId(s.sessionId);
+      void refreshGit(s.cwd);
       streamBuf.current[s.sessionId] = {
         assistant: "",
         thought: "",
@@ -510,11 +588,15 @@ export default function App() {
           plan: [],
           modeId: null,
           planDoc: null,
+          reviewComments: [],
         };
         return [desk, ...prev];
       });
       setActiveId(d.sessionId);
-      if (alreadyOpen) return;
+      if (alreadyOpen) {
+        void refreshGit(d.cwd);
+        return;
+      }
 
       // Clear stream buffers — history will replay via session/update
       streamBuf.current[d.sessionId] = {
@@ -541,12 +623,24 @@ export default function App() {
       } catch {
         /* optional */
       }
+      // Drop oversized thoughts from replay so resume doesn't freeze the UI
       patchSession(d.sessionId, (s) => ({
         ...s,
         busy: false,
         planDoc,
         items: [
-          ...s.items.filter((i) => i.role !== "system" || !i.text.startsWith("Loading")),
+          ...s.items
+            .filter((i) => i.role !== "system" || !i.text.startsWith("Loading"))
+            .map((i) =>
+              i.role === "thought" && i.text.length > MAX_THOUGHT_CHARS
+                ? {
+                    ...i,
+                    text:
+                      "…[thought truncated on resume]…\n" +
+                      i.text.slice(-MAX_THOUGHT_CHARS),
+                  }
+                : i,
+            ),
           {
             id: uid(),
             role: "system",
@@ -554,6 +648,7 @@ export default function App() {
           },
         ],
       }));
+      void refreshGit(d.cwd);
     } catch (e) {
       setError(String(e));
       patchSession(d.sessionId, (s) => ({ ...s, busy: false }));
@@ -573,8 +668,24 @@ export default function App() {
 
   const send = async () => {
     if (!active || !prompt.trim() || active.busy) return;
-    const text = prompt.trim();
+    const userText = prompt.trim();
+    let text = userText;
     const sessionId = active.sessionId;
+    const comments = active.reviewComments ?? [];
+    if (comments.length > 0) {
+      const block = comments
+        .map((c) => {
+          const loc =
+            c.startLine != null
+              ? `${c.path}:${c.startLine}`
+              : c.path;
+          const snip = c.snippet ? `\n  > ${c.snippet}` : "";
+          return `- ${loc}: ${c.body}${snip}`;
+        })
+        .join("\n");
+      text =
+        `${text}\n\n## Review comments (apply these fixes)\n${block}`;
+    }
     setPrompt("");
     setError(null);
     const buf = ensureBuf(sessionId);
@@ -590,11 +701,22 @@ export default function App() {
     patchSession(sessionId, (s) => ({
       ...s,
       busy: true,
-      items: [...s.items, { id: userMsgId, role: "user", text }],
+      reviewComments: [],
+      items: [
+        ...s.items,
+        {
+          id: userMsgId,
+          role: "user",
+          text:
+            comments.length > 0
+              ? `${userText}  ·  (${comments.length} review note${comments.length === 1 ? "" : "s"} attached)`
+              : userText,
+        },
+      ],
       // Promote title from first user message if still folder name
       title:
-        s.title === folderName(s.cwd) && text.length < 60
-          ? text
+        s.title === folderName(s.cwd) && userText.length < 60
+          ? userText
           : s.title,
     }));
 
@@ -633,6 +755,7 @@ export default function App() {
         ],
       }));
       await refreshDisk();
+      if (active.cwd) void refreshGit(active.cwd, gitSelected);
     } catch (e) {
       setError(String(e));
       patchSession(sessionId, (s) => ({ ...s, busy: false }));
@@ -740,6 +863,30 @@ export default function App() {
     }
   };
 
+  const selectGitFile = async (path: string) => {
+    if (!active) return;
+    setGitSelected(path);
+    setGitLoading(true);
+    try {
+      const d = await invoke<{
+        path: string | null;
+        patch: string;
+        error?: string | null;
+      }>("git_diff", { cwd: active.cwd, path });
+      setGitPatch(d.patch ?? "");
+      if (d.error) setGitError(d.error);
+    } catch (e) {
+      setGitError(String(e));
+    } finally {
+      setGitLoading(false);
+    }
+  };
+
+  // Refresh git when switching sessions
+  useEffect(() => {
+    if (active?.cwd) void refreshGit(active.cwd);
+  }, [active?.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const headerStatus = useMemo(() => {
     if (!grok?.available) return "Grok CLI missing";
     if (!running) return "Disconnected";
@@ -759,7 +906,7 @@ export default function App() {
             }`}
           />
           <span className="text-sm font-semibold tracking-wide">Grok Desk</span>
-          <span className="text-xs text-[var(--text-muted)]">v0.3 · Plan + mission control</span>
+          <span className="text-xs text-[var(--text-muted)]">v0.4 · Review loop</span>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-[var(--text-muted)]">
           <span className="mono">{headerStatus}</span>
@@ -986,6 +1133,17 @@ export default function App() {
                     {active.plan.length}
                   </span>
                 )}
+                {gitFiles.length > 0 && (
+                  <span className="mono text-[10px] text-[var(--tool)]">
+                    {gitFiles.length} changed
+                  </span>
+                )}
+                {(active.reviewComments?.length ?? 0) > 0 && (
+                  <span className="rounded bg-[var(--warning)]/20 px-1.5 py-0.5 text-[10px] text-[var(--warning)]">
+                    {active.reviewComments.length} review note
+                    {active.reviewComments.length === 1 ? "" : "s"} → next send
+                  </span>
+                )}
                 <span className="mono ml-auto">
                   {active.modelId || info?.modelId || "—"}
                 </span>
@@ -1110,18 +1268,48 @@ export default function App() {
         </main>
 
         {active && (
-          <PlanPane
-            plan={active.plan}
-            modeId={active.modeId}
-            planDoc={active.planDoc}
-            busy={active.busy}
-            open={planOpen}
-            onToggle={() => setPlanOpen((v) => !v)}
-            onEnterPlanMode={enterPlanMode}
-            onApprove={approvePlan}
-            onRevise={revisePlan}
-            onRefreshDoc={() => void refreshPlanDoc()}
-          />
+          <>
+            <PlanPane
+              plan={active.plan}
+              modeId={active.modeId}
+              planDoc={active.planDoc}
+              busy={active.busy}
+              open={planOpen}
+              onToggle={() => setPlanOpen((v) => !v)}
+              onEnterPlanMode={enterPlanMode}
+              onApprove={approvePlan}
+              onRevise={revisePlan}
+              onRefreshDoc={() => void refreshPlanDoc()}
+            />
+            <DiffPane
+              open={diffOpen}
+              onToggle={() => setDiffOpen((v) => !v)}
+              isRepo={gitIsRepo}
+              files={gitFiles}
+              selectedPath={gitSelected}
+              patch={gitPatch}
+              error={gitError}
+              loading={gitLoading}
+              comments={active.reviewComments ?? []}
+              onSelectFile={(p) => void selectGitFile(p)}
+              onRefresh={() => void refreshGit(active.cwd, gitSelected)}
+              onAddComment={(c) => {
+                const comment: ReviewComment = { ...c, id: uid() };
+                patchSession(active.sessionId, (s) => ({
+                  ...s,
+                  reviewComments: [...(s.reviewComments ?? []), comment],
+                }));
+              }}
+              onRemoveComment={(id) => {
+                patchSession(active.sessionId, (s) => ({
+                  ...s,
+                  reviewComments: (s.reviewComments ?? []).filter(
+                    (x) => x.id !== id,
+                  ),
+                }));
+              }}
+            />
+          </>
         )}
         </div>
       </div>
@@ -1182,12 +1370,17 @@ function MessageBubble({ item }: { item: ChatItem }) {
   }
   if (item.role === "thought") {
     return (
-      <div className="rounded-lg border border-[var(--thought)]/20 bg-[var(--thought)]/5 px-3 py-2 text-xs leading-relaxed text-[var(--thought)]">
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider opacity-70">
+      <details className="rounded-lg border border-[var(--thought)]/20 bg-[var(--thought)]/5 px-3 py-2 text-xs leading-relaxed text-[var(--thought)]">
+        <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider opacity-70">
           Thinking
+          {item.text.length > 200
+            ? ` · ${Math.round(item.text.length / 1000)}k chars`
+            : ""}
+        </summary>
+        <div className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap">
+          {item.text}
         </div>
-        <div className="whitespace-pre-wrap">{item.text}</div>
-      </div>
+      </details>
     );
   }
   if (item.role === "tool") {

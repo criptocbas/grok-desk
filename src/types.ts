@@ -87,4 +87,30 @@ export type DeskSession = {
   modeId?: string | null;
   /** Optional long-form plan.md from disk */
   planDoc?: string | null;
+  /** Pending review comments to inject on next send */
+  reviewComments: ReviewComment[];
+};
+
+export type GitFileStatus = {
+  path: string;
+  /** e.g. M, A, D, ??, MM */
+  status: string;
+};
+
+export type GitDiffResult = {
+  path: string | null;
+  patch: string;
+  isRepo: boolean;
+  error?: string | null;
+};
+
+export type ReviewComment = {
+  id: string;
+  path: string;
+  /** 1-based line in the new file side when known; optional for whole-file notes */
+  startLine?: number | null;
+  endLine?: number | null;
+  body: string;
+  /** Optional snippet of the line(s) being commented */
+  snippet?: string | null;
 };

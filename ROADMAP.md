@@ -23,13 +23,14 @@
 - [ ] OS notifications when a background session finishes (nice-to-have)
 - [ ] Worktree-per-session toggle
 
-## Phase 2 — Review loop (in progress)
+## Phase 2 — Review loop
 
 - [x] Plan pane (ACP `plan` + `todo_write` checklist)
 - [x] Plan mode indicator + Enter plan mode / Approve / Revise
 - [x] Load `plan.md` from session disk when present
-- [ ] Diff pane (`git status` / `git diff` / worktree)
-- [ ] Line comments → injected into next prompt
+- [x] Diff pane (`git status` / `git diff` in session cwd)
+- [x] Line comments on `+` lines → injected into next prompt
+- [x] Thought/transcript caps to avoid webview OOM crashes
 
 ## Phase 3 — Workspace
 
