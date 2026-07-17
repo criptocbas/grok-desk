@@ -61,6 +61,15 @@ export type ToolCallItem = {
   raw?: unknown;
 };
 
+export type PlanEntryStatus = "pending" | "in_progress" | "completed" | string;
+export type PlanEntryPriority = "high" | "medium" | "low" | string;
+
+export type PlanEntry = {
+  content: string;
+  priority: PlanEntryPriority;
+  status: PlanEntryStatus;
+};
+
 /** One open tab in the mission-control sidebar. */
 export type DeskSession = {
   sessionId: string;
@@ -72,4 +81,10 @@ export type DeskSession = {
   permissions: PermissionRequest[];
   busy: boolean;
   createdAt: number;
+  /** Live agent plan (ACP sessionUpdate: plan / todo_write). */
+  plan: PlanEntry[];
+  /** e.g. "plan" | "default" | "always-approve" from current_mode_update */
+  modeId?: string | null;
+  /** Optional long-form plan.md from disk */
+  planDoc?: string | null;
 };

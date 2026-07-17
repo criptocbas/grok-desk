@@ -8,8 +8,10 @@ import type {
   DiskSession,
   GrokStatus,
   PermissionRequest,
+  PlanEntry,
   SessionInfo,
 } from "./types";
+import { PlanPane } from "./components/PlanPane";
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -122,6 +124,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [diskSessions, setDiskSessions] = useState<DiskSession[]>([]);
   const [showRecents, setShowRecents] = useState(false);
+  const [planOpen, setPlanOpen] = useState(true);
   const [stderrTail, setStderrTail] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Per-session streaming buffers keyed by sessionId
@@ -316,6 +319,17 @@ export default function App() {
             ],
           };
         });
+      } else if (kind === "plan") {
+        const entries = parsePlanEntries(update.entries);
+        if (entries) {
+          patchSession(sessionId, (s) => ({ ...s, plan: entries }));
+        }
+      } else if (kind === "current_mode_update") {
+        const modeId =
+          (update.currentModeId as string) ||
+          (update.current_mode_id as string) ||
+          null;
+        patchSession(sessionId, (s) => ({ ...s, modeId }));
       } else if (kind === "tool_call") {
         const id =
           (update.toolCallId as string) ||
@@ -324,6 +338,7 @@ export default function App() {
         const title =
           (update.title as string) || (update.tool as string) || "tool";
         const status = (update.status as string) || "pending";
+        const planFromTool = planFromTodoInput(update.rawInput ?? update);
         patchSession(sessionId, (s) => {
           const tools = [
             ...s.tools.filter((t) => t.id !== id),
@@ -351,7 +366,12 @@ export default function App() {
                   status,
                 },
               ];
-          return { ...s, tools, items };
+          return {
+            ...s,
+            tools,
+            items,
+            plan: planFromTool ?? s.plan,
+          };
         });
       } else if (kind === "tool_call_update") {
         const id =
@@ -360,6 +380,7 @@ export default function App() {
           "";
         const status = (update.status as string) || "updated";
         if (!id) return;
+        const planFromTool = planFromTodoInput(update.rawInput ?? update);
         patchSession(sessionId, (s) => ({
           ...s,
           tools: s.tools.map((t) =>
@@ -368,6 +389,7 @@ export default function App() {
           items: s.items.map((i) =>
             i.id === `tool-${id}` ? { ...i, meta: status, status } : i,
           ),
+          plan: planFromTool ?? s.plan,
         }));
       }
     }).then(track);
@@ -433,6 +455,9 @@ export default function App() {
         permissions: [],
         busy: false,
         createdAt: Date.now(),
+        plan: [],
+        modeId: null,
+        planDoc: null,
       };
       setSessions((prev) => [desk, ...prev]);
       setActiveId(s.sessionId);
@@ -482,6 +507,9 @@ export default function App() {
           permissions: [],
           busy: true,
           createdAt: Date.now(),
+          plan: [],
+          modeId: null,
+          planDoc: null,
         };
         return [desk, ...prev];
       });
@@ -503,9 +531,20 @@ export default function App() {
         sessionId: d.sessionId,
         cwd: d.cwd,
       });
+      let planDoc: string | null = null;
+      try {
+        planDoc =
+          (await invoke<string | null>("read_plan_doc", {
+            sessionId: d.sessionId,
+            cwd: d.cwd,
+          })) ?? null;
+      } catch {
+        /* optional */
+      }
       patchSession(d.sessionId, (s) => ({
         ...s,
         busy: false,
+        planDoc,
         items: [
           ...s.items.filter((i) => i.role !== "system" || !i.text.startsWith("Loading")),
           {
@@ -625,6 +664,82 @@ export default function App() {
     }
   };
 
+  /** Inject a system-steering prompt into the active session. */
+  const steer = async (text: string) => {
+    if (!active || active.busy) return;
+    setPrompt("");
+    const sessionId = active.sessionId;
+    const buf = ensureBuf(sessionId);
+    buf.assistant = "";
+    buf.thought = "";
+    buf.user = text;
+    buf.aId = null;
+    buf.tId = null;
+    const userMsgId = uid();
+    buf.uId = userMsgId;
+    patchSession(sessionId, (s) => ({
+      ...s,
+      busy: true,
+      items: [...s.items, { id: userMsgId, role: "user", text }],
+    }));
+    try {
+      await invoke("session_prompt", { sessionId, text });
+      const b = ensureBuf(sessionId);
+      b.assistant = "";
+      b.thought = "";
+      b.user = "";
+      b.aId = null;
+      b.tId = null;
+      b.uId = null;
+      patchSession(sessionId, (s) => ({
+        ...s,
+        busy: false,
+        items: [
+          ...s.items,
+          { id: uid(), role: "system", text: "Turn complete", meta: "stop" },
+        ],
+      }));
+    } catch (e) {
+      setError(String(e));
+      patchSession(sessionId, (s) => ({ ...s, busy: false }));
+    }
+  };
+
+  const enterPlanMode = () => {
+    void steer(
+      "Enter plan mode. Design a clear multi-step plan for the current goal. " +
+        "Do not implement code yet — wait for my explicit approval. " +
+        "Use todos / plan entries I can track.",
+    );
+  };
+
+  const approvePlan = () => {
+    void steer(
+      "Plan approved. Execute the plan step by step. " +
+        "Update todo/plan status as you complete each step. Prefer small, verifiable diffs.",
+    );
+  };
+
+  const revisePlan = () => {
+    setPrompt("Please revise the plan: ");
+  };
+
+  const refreshPlanDoc = async () => {
+    if (!active) return;
+    try {
+      const doc = await invoke<string | null>("read_plan_doc", {
+        sessionId: active.sessionId,
+        cwd: active.cwd,
+      });
+      patchSession(active.sessionId, (s) => ({
+        ...s,
+        planDoc: doc ?? null,
+      }));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const headerStatus = useMemo(() => {
     if (!grok?.available) return "Grok CLI missing";
     if (!running) return "Disconnected";
@@ -644,7 +759,7 @@ export default function App() {
             }`}
           />
           <span className="text-sm font-semibold tracking-wide">Grok Desk</span>
-          <span className="text-xs text-[var(--text-muted)]">v0.2 · Mission control</span>
+          <span className="text-xs text-[var(--text-muted)]">v0.3 · Plan + mission control</span>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-[var(--text-muted)]">
           <span className="mono">{headerStatus}</span>
@@ -754,6 +869,9 @@ export default function App() {
                           </div>
                           <div className="mono truncate text-[10px] text-[var(--text-muted)]">
                             {folderName(s.cwd)} · {shortId(s.sessionId)}
+                            {s.plan.length > 0
+                              ? ` · ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`
+                              : ""}
                           </div>
                         </div>
                         <span
@@ -849,13 +967,25 @@ export default function App() {
           )}
         </aside>
 
-        {/* Main */}
+        {/* Main + plan */}
+        <div className="flex min-w-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col">
           {active ? (
             <>
               <div className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)]/60 px-4 py-2 text-xs text-[var(--text-muted)]">
                 <span className="font-medium text-[var(--text)]">{active.title}</span>
                 <span className="mono truncate">{active.cwd}</span>
+                {active.modeId === "plan" && (
+                  <span className="rounded bg-[var(--thought)]/20 px-1.5 py-0.5 text-[10px] text-[var(--thought)]">
+                    plan mode
+                  </span>
+                )}
+                {active.plan.length > 0 && (
+                  <span className="mono text-[10px] text-[var(--text-muted)]">
+                    plan {active.plan.filter((e) => e.status === "completed").length}/
+                    {active.plan.length}
+                  </span>
+                )}
                 <span className="mono ml-auto">
                   {active.modelId || info?.modelId || "—"}
                 </span>
@@ -978,9 +1108,66 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {active && (
+          <PlanPane
+            plan={active.plan}
+            modeId={active.modeId}
+            planDoc={active.planDoc}
+            busy={active.busy}
+            open={planOpen}
+            onToggle={() => setPlanOpen((v) => !v)}
+            onEnterPlanMode={enterPlanMode}
+            onApprove={approvePlan}
+            onRevise={revisePlan}
+            onRefreshDoc={() => void refreshPlanDoc()}
+          />
+        )}
+        </div>
       </div>
     </div>
   );
+}
+
+function parsePlanEntries(raw: unknown): PlanEntry[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out: PlanEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const content =
+      (typeof o.content === "string" && o.content) ||
+      (typeof o.text === "string" && o.text) ||
+      "";
+    if (!content) continue;
+    out.push({
+      content,
+      priority: (typeof o.priority === "string" && o.priority) || "medium",
+      status: (typeof o.status === "string" && o.status) || "pending",
+    });
+  }
+  return out.length ? out : null;
+}
+
+/** Extract plan steps from todo_write tool payloads. */
+function planFromTodoInput(raw: unknown): PlanEntry[] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const todos = o.todos;
+  if (!Array.isArray(todos)) return null;
+  const out: PlanEntry[] = [];
+  for (const t of todos) {
+    if (!t || typeof t !== "object") continue;
+    const item = t as Record<string, unknown>;
+    const content = typeof item.content === "string" ? item.content : "";
+    if (!content) continue;
+    out.push({
+      content,
+      priority: "medium",
+      status: (typeof item.status === "string" && item.status) || "pending",
+    });
+  }
+  return out.length ? out : null;
 }
 
 function MessageBubble({ item }: { item: ChatItem }) {

@@ -137,6 +137,11 @@ fn list_disk_sessions(limit: Option<usize>) -> Result<Vec<DiskSession>, String> 
 }
 
 #[tauri::command]
+fn read_plan_doc(session_id: String, cwd: String) -> Option<String> {
+    SharedAgent::read_plan_doc(&session_id, &cwd)
+}
+
+#[tauri::command]
 fn default_cwd() -> String {
     std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -162,6 +167,7 @@ pub fn run() {
             session_cancel,
             permission_respond,
             list_disk_sessions,
+            read_plan_doc,
             default_cwd,
         ])
         .setup(|app| {

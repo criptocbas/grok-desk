@@ -428,6 +428,26 @@ impl SharedAgent {
         self.write_line(&msg)
     }
 
+    /// Read plan.md for a session if present (session root or goal/).
+    pub fn read_plan_doc(session_id: &str, cwd: &str) -> Option<String> {
+        let home = dirs_home()?;
+        let encoded = urlencoding_path(cwd);
+        let base = Path::new(&home)
+            .join(".grok")
+            .join("sessions")
+            .join(&encoded)
+            .join(session_id);
+        for rel in ["plan.md", "goal/plan.md"] {
+            let p = base.join(rel);
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                if !text.trim().is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        None
+    }
+
     /// List recent sessions from ~/.grok/sessions (newest first).
     pub fn list_disk_sessions(limit: usize) -> Result<Vec<DiskSession>> {
         let home = dirs_home().ok_or_else(|| AcpError::Msg("HOME not set".into()))?;
@@ -551,6 +571,11 @@ fn folder_title(cwd: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(cwd)
         .to_string()
+}
+
+/// Match Grok's session dir encoding (`/` → `%2F`).
+fn urlencoding_path(cwd: &str) -> String {
+    cwd.replace('%', "%25").replace('/', "%2F")
 }
 
 /// Apply optional 1-based `line` start and `limit` line count (ACP fs/read_text_file).
