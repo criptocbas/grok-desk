@@ -1,0 +1,156 @@
+mod acp;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use acp::{AgentInfo, GrokStatus, SessionInfo, SharedAgent};
+use parking_lot::Mutex;
+use serde_json::Value;
+use tauri::{AppHandle, Emitter, State};
+
+struct AppState {
+    agent: Mutex<Option<Arc<SharedAgent>>>,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            agent: Mutex::new(None),
+        }
+    }
+
+    fn agent(&self) -> Result<Arc<SharedAgent>, String> {
+        self.agent
+            .lock()
+            .clone()
+            .ok_or_else(|| "Agent not running. Click Connect first.".into())
+    }
+}
+
+#[tauri::command]
+fn grok_status() -> GrokStatus {
+    SharedAgent::grok_status()
+}
+
+#[tauri::command]
+async fn agent_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AgentInfo, String> {
+    {
+        let g = state.agent.lock();
+        if let Some(agent) = g.as_ref() {
+            return Ok(agent.info());
+        }
+    }
+
+    let agent = SharedAgent::spawn(app.clone()).map_err(|e| e.to_string())?;
+    let info = agent.initialize_and_auth().await.map_err(|e| e.to_string())?;
+    *state.agent.lock() = Some(agent);
+    let _ = app.emit("acp://status", serde_json::json!({ "running": true }));
+    Ok(info)
+}
+
+#[tauri::command]
+fn agent_stop(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(agent) = state.agent.lock().take() {
+        agent.kill();
+    }
+    let _ = app.emit("acp://status", serde_json::json!({ "running": false }));
+    Ok(())
+}
+
+#[tauri::command]
+fn agent_info(state: State<'_, AppState>) -> Result<Option<AgentInfo>, String> {
+    Ok(state.agent.lock().as_ref().map(|a| a.info()))
+}
+
+#[tauri::command]
+fn agent_session(state: State<'_, AppState>) -> Result<Option<SessionInfo>, String> {
+    Ok(state.agent.lock().as_ref().and_then(|a| a.session()))
+}
+
+#[tauri::command]
+async fn session_new(
+    state: State<'_, AppState>,
+    cwd: String,
+) -> Result<SessionInfo, String> {
+    let agent = state.agent()?;
+    let path = PathBuf::from(&cwd);
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {cwd}"));
+    }
+    agent.new_session(&path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn session_prompt(state: State<'_, AppState>, text: String) -> Result<Value, String> {
+    if text.trim().is_empty() {
+        return Err("Empty prompt".into());
+    }
+    let agent = state.agent()?;
+    agent.prompt(&text).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn session_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    let agent = state.agent()?;
+    agent.cancel().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn permission_respond(
+    state: State<'_, AppState>,
+    request_id: u64,
+    option_id: Option<String>,
+) -> Result<(), String> {
+    let agent = state.agent()?;
+    agent
+        .respond_permission(request_id, option_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn default_cwd() -> String {
+    std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "/home".into())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let _ = env_logger::try_init();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppState::new())
+        .invoke_handler(tauri::generate_handler![
+            grok_status,
+            agent_start,
+            agent_stop,
+            agent_info,
+            agent_session,
+            session_new,
+            session_prompt,
+            session_cancel,
+            permission_respond,
+            default_cwd,
+        ])
+        .setup(|app| {
+            // Ensure PATH includes common grok install locations for GUI-launched apps
+            if let Ok(home) = std::env::var("HOME") {
+                let grok_bin = format!("{home}/.grok/bin");
+                let path = std::env::var("PATH").unwrap_or_default();
+                if !path.split(':').any(|p| p == grok_bin) {
+                    // SAFETY: single-threaded at setup; only extends PATH
+                    unsafe {
+                        std::env::set_var("PATH", format!("{grok_bin}:{path}"));
+                    }
+                }
+            }
+            let _ = app;
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running grok-desk");
+}
