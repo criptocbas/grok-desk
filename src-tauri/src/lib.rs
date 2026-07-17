@@ -3,7 +3,7 @@ mod acp;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use acp::{AgentInfo, GrokStatus, SessionInfo, SharedAgent};
+use acp::{AgentInfo, DiskSession, GrokStatus, SessionInfo, SharedAgent};
 use parking_lot::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
@@ -33,10 +33,7 @@ fn grok_status() -> GrokStatus {
 }
 
 #[tauri::command]
-async fn agent_start(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<AgentInfo, String> {
+async fn agent_start(app: AppHandle, state: State<'_, AppState>) -> Result<AgentInfo, String> {
     {
         let g = state.agent.lock();
         if let Some(agent) = g.as_ref() {
@@ -45,7 +42,10 @@ async fn agent_start(
     }
 
     let agent = SharedAgent::spawn(app.clone()).map_err(|e| e.to_string())?;
-    let info = agent.initialize_and_auth().await.map_err(|e| e.to_string())?;
+    let info = agent
+        .initialize_and_auth()
+        .await
+        .map_err(|e| e.to_string())?;
     *state.agent.lock() = Some(agent);
     let _ = app.emit("acp://status", serde_json::json!({ "running": true }));
     Ok(info)
@@ -71,10 +71,7 @@ fn agent_session(state: State<'_, AppState>) -> Result<Option<SessionInfo>, Stri
 }
 
 #[tauri::command]
-async fn session_new(
-    state: State<'_, AppState>,
-    cwd: String,
-) -> Result<SessionInfo, String> {
+async fn session_new(state: State<'_, AppState>, cwd: String) -> Result<SessionInfo, String> {
     let agent = state.agent()?;
     let path = PathBuf::from(&cwd);
     if !path.is_dir() {
@@ -84,18 +81,42 @@ async fn session_new(
 }
 
 #[tauri::command]
-async fn session_prompt(state: State<'_, AppState>, text: String) -> Result<Value, String> {
+async fn session_load(
+    state: State<'_, AppState>,
+    session_id: String,
+    cwd: String,
+) -> Result<SessionInfo, String> {
+    let agent = state.agent()?;
+    let path = PathBuf::from(&cwd);
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {cwd}"));
+    }
+    agent
+        .load_session(&session_id, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn session_prompt(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<Value, String> {
     if text.trim().is_empty() {
         return Err("Empty prompt".into());
     }
     let agent = state.agent()?;
-    agent.prompt(&text).await.map_err(|e| e.to_string())
+    agent
+        .prompt(&session_id, &text)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn session_cancel(state: State<'_, AppState>) -> Result<(), String> {
+fn session_cancel(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let agent = state.agent()?;
-    agent.cancel().map_err(|e| e.to_string())
+    agent.cancel(&session_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -108,6 +129,11 @@ fn permission_respond(
     agent
         .respond_permission(request_id, option_id)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_disk_sessions(limit: Option<usize>) -> Result<Vec<DiskSession>, String> {
+    SharedAgent::list_disk_sessions(limit.unwrap_or(40)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -131,13 +157,14 @@ pub fn run() {
             agent_info,
             agent_session,
             session_new,
+            session_load,
             session_prompt,
             session_cancel,
             permission_respond,
+            list_disk_sessions,
             default_cwd,
         ])
         .setup(|app| {
-            // Ensure PATH includes common grok install locations for GUI-launched apps
             if let Ok(home) = std::env::var("HOME") {
                 let grok_bin = format!("{home}/.grok/bin");
                 let path = std::env::var("PATH").unwrap_or_default();

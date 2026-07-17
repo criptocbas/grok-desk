@@ -15,6 +15,18 @@ export type SessionInfo = {
   sessionId: string;
   cwd: string;
   modelId: string | null;
+  title?: string | null;
+  updatedAt?: string | null;
+  fromDisk?: boolean;
+};
+
+export type DiskSession = {
+  sessionId: string;
+  cwd: string;
+  title: string | null;
+  modelId: string | null;
+  updatedAt: string | null;
+  numChatMessages: number | null;
 };
 
 export type PermissionOption = {
@@ -47,4 +59,17 @@ export type ToolCallItem = {
   kind?: string;
   status: string;
   raw?: unknown;
+};
+
+/** One open tab in the mission-control sidebar. */
+export type DeskSession = {
+  sessionId: string;
+  cwd: string;
+  title: string;
+  modelId?: string | null;
+  items: ChatItem[];
+  tools: ToolCallItem[];
+  permissions: PermissionRequest[];
+  busy: boolean;
+  createdAt: number;
 };

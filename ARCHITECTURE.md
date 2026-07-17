@@ -23,8 +23,9 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 ## Process model (v0.1)
 
 - One `grok agent stdio` process per app connection.
-- One active ACP session at a time (multi-session is Phase 1).
-- Initialize → authenticate (`cached_token` from `~/.grok/auth.json`) → `session/new`.
+- One agent process can host **many** ACP sessions (`session/new` / `session/load`).
+- UI routes `session/update` by `sessionId` into per-tab transcripts.
+- Initialize → authenticate (`cached_token` from `~/.grok/auth.json`) → sessions.
 
 ### Client capabilities (tools)
 
@@ -65,8 +66,10 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `grok_status` | Is `grok` on PATH? |
 | `agent_start` / `agent_stop` | Spawn / kill agent |
 | `session_new` | `session/new` with cwd |
-| `session_prompt` | `session/prompt` (awaits turn end) |
-| `session_cancel` | `session/cancel` |
+| `session_load` | `session/load` (replay history) |
+| `session_prompt` | `session/prompt` (sessionId + text) |
+| `session_cancel` | `session/cancel` (sessionId) |
+| `list_disk_sessions` | Scan `~/.grok/sessions/**/summary.json` |
 | `permission_respond` | Answer permission request |
 
 ## Key files

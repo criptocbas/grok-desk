@@ -66,6 +66,23 @@ pub struct SessionInfo {
     pub session_id: String,
     pub cwd: String,
     pub model_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub from_disk: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskSession {
+    pub session_id: String,
+    pub cwd: String,
+    pub title: Option<String>,
+    pub model_id: Option<String>,
+    pub updated_at: Option<String>,
+    pub num_chat_messages: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,25 +349,62 @@ impl SharedAgent {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Track last-used for convenience; multi-session uses explicit ids.
         *self.session_id.lock() = Some(session_id.clone());
         *self.cwd.lock() = Some(cwd_str.clone());
         if model_id.is_some() {
             self.info.lock().model_id = model_id.clone();
         }
 
+        let title = folder_title(&cwd_str);
         Ok(SessionInfo {
             session_id,
             cwd: cwd_str,
             model_id,
+            title: Some(title),
+            updated_at: None,
+            from_disk: false,
         })
     }
 
-    pub async fn prompt(&self, text: &str) -> Result<Value> {
-        let session_id = self
-            .session_id
-            .lock()
-            .clone()
-            .ok_or_else(|| AcpError::Msg("no active session — create one first".into()))?;
+    /// Load an existing on-disk session (replays history via session/update).
+    pub async fn load_session(&self, session_id: &str, cwd: &Path) -> Result<SessionInfo> {
+        let cwd_str = cwd
+            .canonicalize()
+            .unwrap_or_else(|_| cwd.to_path_buf())
+            .display()
+            .to_string();
+
+        // Replay streams as session/update notifications before this returns.
+        let _ = self
+            .request(
+                "session/load",
+                json!({
+                    "sessionId": session_id,
+                    "cwd": cwd_str,
+                    "mcpServers": []
+                }),
+            )
+            .await?;
+
+        *self.session_id.lock() = Some(session_id.to_string());
+        *self.cwd.lock() = Some(cwd_str.clone());
+
+        Ok(SessionInfo {
+            session_id: session_id.to_string(),
+            cwd: cwd_str.clone(),
+            model_id: self.info.lock().model_id.clone(),
+            title: Some(folder_title(&cwd_str)),
+            updated_at: None,
+            from_disk: true,
+        })
+    }
+
+    pub async fn prompt(&self, session_id: &str, text: &str) -> Result<Value> {
+        if session_id.trim().is_empty() {
+            return Err(AcpError::Msg("session_id required".into()));
+        }
+        *self.session_id.lock() = Some(session_id.to_string());
 
         self.request(
             "session/prompt",
@@ -362,19 +416,86 @@ impl SharedAgent {
         .await
     }
 
-    pub fn cancel(&self) -> Result<()> {
-        let session_id = self
-            .session_id
-            .lock()
-            .clone()
-            .ok_or_else(|| AcpError::Msg("no active session".into()))?;
-
+    pub fn cancel(&self, session_id: &str) -> Result<()> {
+        if session_id.trim().is_empty() {
+            return Err(AcpError::Msg("session_id required".into()));
+        }
         let msg = json!({
             "jsonrpc": "2.0",
             "method": "session/cancel",
             "params": { "sessionId": session_id }
         });
         self.write_line(&msg)
+    }
+
+    /// List recent sessions from ~/.grok/sessions (newest first).
+    pub fn list_disk_sessions(limit: usize) -> Result<Vec<DiskSession>> {
+        let home = dirs_home().ok_or_else(|| AcpError::Msg("HOME not set".into()))?;
+        let root = Path::new(&home).join(".grok").join("sessions");
+        if !root.is_dir() {
+            return Ok(vec![]);
+        }
+
+        let mut out: Vec<DiskSession> = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let summary = path.join("summary.json");
+                    if summary.is_file() {
+                        if let Ok(text) = std::fs::read_to_string(&summary) {
+                            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                let sid = v
+                                    .pointer("/info/id")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let cwd = v
+                                    .pointer("/info/cwd")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                if sid.is_empty() || cwd.is_empty() {
+                                    continue;
+                                }
+                                let title = v
+                                    .get("session_summary")
+                                    .and_then(|x| x.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.to_string())
+                                    .or_else(|| Some(folder_title(&cwd)));
+                                out.push(DiskSession {
+                                    session_id: sid,
+                                    cwd,
+                                    title,
+                                    model_id: v
+                                        .get("current_model_id")
+                                        .and_then(|x| x.as_str())
+                                        .map(|s| s.to_string()),
+                                    updated_at: v
+                                        .get("updated_at")
+                                        .and_then(|x| x.as_str())
+                                        .map(|s| s.to_string()),
+                                    num_chat_messages: v
+                                        .get("num_chat_messages")
+                                        .and_then(|x| x.as_u64()),
+                                });
+                            }
+                        }
+                    } else {
+                        stack.push(path);
+                    }
+                }
+            }
+        }
+
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.truncate(limit.max(1));
+        Ok(out)
     }
 
     pub fn respond_permission(&self, request_id: u64, option_id: Option<String>) -> Result<()> {
@@ -408,12 +529,28 @@ impl SharedAgent {
 
     pub fn session(&self) -> Option<SessionInfo> {
         let sid = self.session_id.lock().clone()?;
+        let cwd = self.cwd.lock().clone().unwrap_or_default();
         Some(SessionInfo {
             session_id: sid,
-            cwd: self.cwd.lock().clone().unwrap_or_default(),
+            title: Some(folder_title(&cwd)),
+            cwd,
             model_id: self.info.lock().model_id.clone(),
+            updated_at: None,
+            from_disk: false,
         })
     }
+}
+
+fn dirs_home() -> Option<String> {
+    std::env::var("HOME").ok()
+}
+
+fn folder_title(cwd: &str) -> String {
+    Path::new(cwd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cwd)
+        .to_string()
 }
 
 /// Apply optional 1-based `line` start and `limit` line count (ACP fs/read_text_file).
