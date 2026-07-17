@@ -9,6 +9,8 @@
 - [x] Stream message / thought / tool updates
 - [x] Permission cards (approve / deny)
 - [x] Cancel turn
+- [x] Fix doubled streaming text (duplicate listeners)
+- [x] Fix tool reliability (disable client fs/terminal; agent-local tools)
 
 ## Phase 1 — Mission control
 

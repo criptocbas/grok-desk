@@ -230,14 +230,24 @@ impl SharedAgent {
     }
 
     pub async fn initialize_and_auth(&self) -> Result<AgentInfo> {
+        // IMPORTANT: Do NOT advertise client `fs` / `terminal` capabilities.
+        // When those are true, Grok routes read_file / shell through ACP
+        // methods on the *client* (us). Our Phase-0 stubs returned the wrong
+        // JSON shape (`text` instead of `content`) and left terminal/*
+        // unimplemented, so tools failed with deserialize / method-not-found
+        // even though the agent was healthy.
+        //
+        // With fs/terminal off, the agent uses its own local filesystem and
+        // shell — same path as the normal TUI, and the right default for a
+        // desktop shell that co-resides with the project files.
         let init = self
             .request(
                 "initialize",
                 json!({
                     "protocolVersion": 1,
                     "clientCapabilities": {
-                        "fs": { "readTextFile": true, "writeTextFile": true },
-                        "terminal": true
+                        "fs": { "readTextFile": false, "writeTextFile": false },
+                        "terminal": false
                     },
                     "clientInfo": {
                         "name": "grok-desk",
@@ -406,6 +416,23 @@ impl SharedAgent {
     }
 }
 
+/// Apply optional 1-based `line` start and `limit` line count (ACP fs/read_text_file).
+fn apply_line_limit(text: &str, line: Option<u64>, limit: Option<u64>) -> String {
+    if line.is_none() && limit.is_none() {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let start = line.unwrap_or(1).saturating_sub(1) as usize;
+    if start >= lines.len() {
+        return String::new();
+    }
+    let end = match limit {
+        Some(n) => (start + n as usize).min(lines.len()),
+        None => lines.len(),
+    };
+    lines[start..end].join("\n")
+}
+
 fn handle_line(agent: &SharedAgent, app: &AppHandle, line: &str) {
     let Ok(msg) = serde_json::from_str::<Value>(line) else {
         let _ = app.emit("acp://raw", line);
@@ -487,15 +514,29 @@ fn handle_agent_request(agent: &SharedAgent, app: &AppHandle, id: u64, msg: &Val
             };
             let _ = app.emit("acp://permission", req);
         }
+        // Kept for correctness if we re-enable clientCapabilities.fs later.
+        // ACP requires result field name `content` (not `text`).
         "fs/read_text_file" => {
             let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let line = params.get("line").and_then(|v| v.as_u64());
+            let limit = params.get("limit").and_then(|v| v.as_u64());
             let result = match std::fs::read_to_string(path) {
-                Ok(text) => json!({ "jsonrpc": "2.0", "id": id, "result": { "text": text } }),
-                Err(e) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32000, "message": e.to_string() }
-                }),
+                Ok(text) => {
+                    let content = apply_line_limit(&text, line, limit);
+                    json!({ "jsonrpc": "2.0", "id": id, "result": { "content": content } })
+                }
+                Err(e) => {
+                    let code = if e.kind() == std::io::ErrorKind::NotFound {
+                        -32002 // ResourceNotFound-ish; agent maps by message too
+                    } else {
+                        -32000
+                    };
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": code, "message": e.to_string() }
+                    })
+                }
             };
             let _ = agent.write_line(&result);
         }
@@ -506,7 +547,8 @@ fn handle_agent_request(agent: &SharedAgent, app: &AppHandle, id: u64, msg: &Val
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let result = match std::fs::write(path, content) {
-                Ok(()) => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
+                // Spec: empty result on success (`null`)
+                Ok(()) => json!({ "jsonrpc": "2.0", "id": id, "result": null }),
                 Err(e) => json!({
                     "jsonrpc": "2.0",
                     "id": id,
