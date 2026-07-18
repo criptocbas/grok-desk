@@ -30,6 +30,32 @@ import { RichText } from "./components/RichText";
 const MAX_THOUGHT_CHARS = 6_000;
 const MAX_ASSISTANT_CHARS = 400_000;
 const MAX_TRANSCRIPT_ITEMS = 400;
+/** No ACP session update for this long while busy → show stall banner. */
+const STALL_MS = 90_000;
+/** Debounce git status after file-mutating tools. */
+const GIT_REFRESH_DEBOUNCE_MS = 900;
+
+/** Tools that usually change the working tree — trigger auto Diff refresh. */
+function isMutatingTool(title: string, kind?: string): boolean {
+  const t = `${title} ${kind ?? ""}`.toLowerCase();
+  return (
+    t.includes("write") ||
+    t.includes("search_replace") ||
+    t.includes("edit") ||
+    t.includes("delete") ||
+    t.includes("run_terminal") ||
+    t.includes("bash") ||
+    t.includes("shell") ||
+    t.includes("str_replace") ||
+    t.includes("create_file") ||
+    t.includes("apply_patch")
+  );
+}
+
+function isToolDone(status: string): boolean {
+  const s = status.toLowerCase();
+  return s === "completed" || s === "success" || s === "done" || s === "failed" || s === "error";
+}
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -100,10 +126,21 @@ export default function App() {
   const [gitLoading, setGitLoading] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [stderrTail, setStderrTail] = useState<string[]>([]);
+  /** Ticks while busy so stall banner can recompute. */
+  const [clock, setClock] = useState(() => Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   /** Avoid stale closures when answering plan approval reverse-requests. */
   const planApprovalRef = useRef<Record<string, PlanApprovalRequest>>({});
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const gitSelectedRef = useRef(gitSelected);
+  gitSelectedRef.current = gitSelected;
+  const gitRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** sessionIds where user hit Stop — late prompt resolve should not re-busy. */
+  const cancelRequested = useRef<Set<string>>(new Set());
+  /** Last ACP traffic per session (stall detection without re-render spam). */
+  const lastActivityRef = useRef<Record<string, number>>({});
   // Per-session streaming buffers keyed by sessionId
   const streamBuf = useRef<
     Record<
@@ -123,6 +160,12 @@ export default function App() {
     () => sessions.find((s) => s.sessionId === activeId) ?? null,
     [sessions, activeId],
   );
+
+  useEffect(() => {
+    if (!active?.busy) return;
+    const t = setInterval(() => setClock(Date.now()), 5_000);
+    return () => clearInterval(t);
+  }, [active?.busy, active?.sessionId]);
 
   const patchSession = useCallback(
     (sessionId: string, fn: (s: DeskSession) => DeskSession) => {
@@ -159,17 +202,20 @@ export default function App() {
       if (st.error) setGitError(st.error);
       const select =
         path ??
-        gitSelected ??
+        gitSelectedRef.current ??
         st.files?.[0]?.path ??
         null;
       if (select && st.isRepo) {
-        setGitSelected(select);
+        // Keep selection if still present; else first dirty file
+        const stillThere = st.files?.some((f) => f.path === select);
+        const pick = stillThere ? select : st.files?.[0]?.path ?? select;
+        setGitSelected(pick);
         const d = await invoke<{
           path: string | null;
           patch: string;
           isRepo: boolean;
           error?: string | null;
-        }>("git_diff", { cwd, path: select });
+        }>("git_diff", { cwd, path: pick });
         setGitPatch(d.patch ?? "");
         if (d.error) setGitError(d.error);
       } else if (!st.isRepo) {
@@ -183,7 +229,27 @@ export default function App() {
     } finally {
       setGitLoading(false);
     }
-  }, [gitSelected]);
+  }, []);
+
+  /** Debounced git refresh after mutating tools (mid-run Diff updates). */
+  const scheduleGitRefresh = useCallback(
+    (sessionId: string) => {
+      const s = sessionsRef.current.find((x) => x.sessionId === sessionId);
+      if (!s?.cwd) return;
+      // Only auto-refresh Diff for the active session's project
+      if (activeId && sessionId !== activeId) return;
+      if (gitRefreshTimer.current) clearTimeout(gitRefreshTimer.current);
+      const cwd = s.cwd;
+      gitRefreshTimer.current = setTimeout(() => {
+        void refreshGit(cwd, gitSelectedRef.current);
+      }, GIT_REFRESH_DEBOUNCE_MS);
+    },
+    [activeId, refreshGit],
+  );
+
+  const touchActivity = useCallback((sessionId: string) => {
+    lastActivityRef.current[sessionId] = Date.now();
+  }, []);
 
   const ensureBuf = (sessionId: string) => {
     if (!streamBuf.current[sessionId]) {
@@ -245,6 +311,7 @@ export default function App() {
       const p = e.payload;
       const sid = p.sessionId;
       if (!sid) return;
+      touchActivity(sid);
       patchSession(sid, (s) => ({
         ...s,
         permissions: [...s.permissions, p],
@@ -286,6 +353,9 @@ export default function App() {
         | string
         | undefined;
       if (!kind) return;
+
+      // Any ACP traffic counts as liveness (stall detection).
+      touchActivity(sessionId);
 
       if (kind === "agent_message_chunk") {
         const chunk = extractText(update.content);
@@ -404,6 +474,7 @@ export default function App() {
         const title =
           (update.title as string) || (update.tool as string) || "tool";
         const status = (update.status as string) || "pending";
+        const kindStr = update.kind as string | undefined;
         const planFromTool = planFromTodoInput(update.rawInput ?? update);
         patchSession(sessionId, (s) => {
           const tools = [
@@ -411,7 +482,7 @@ export default function App() {
             {
               id,
               title,
-              kind: update.kind as string | undefined,
+              kind: kindStr,
               status,
               raw: update,
             },
@@ -439,6 +510,9 @@ export default function App() {
             plan: planFromTool ?? s.plan,
           };
         });
+        if (isToolDone(status) && isMutatingTool(title, kindStr)) {
+          scheduleGitRefresh(sessionId);
+        }
       } else if (kind === "tool_call_update") {
         const id =
           (update.toolCallId as string) ||
@@ -447,16 +521,34 @@ export default function App() {
         const status = (update.status as string) || "updated";
         if (!id) return;
         const planFromTool = planFromTodoInput(update.rawInput ?? update);
+        // Title may only live on the prior tool_call row
+        const prevTitle =
+          sessionsRef.current
+            .find((s) => s.sessionId === sessionId)
+            ?.tools.find((t) => t.id === id)?.title ?? "";
+        const title =
+          (update.title as string) ||
+          (update.tool as string) ||
+          prevTitle ||
+          "tool";
+        const kindStr =
+          (update.kind as string | undefined) ||
+          sessionsRef.current
+            .find((s) => s.sessionId === sessionId)
+            ?.tools.find((t) => t.id === id)?.kind;
         patchSession(sessionId, (s) => ({
           ...s,
           tools: s.tools.map((t) =>
-            t.id === id ? { ...t, status, raw: update } : t,
+            t.id === id ? { ...t, status, raw: update, title: title || t.title } : t,
           ),
           items: s.items.map((i) =>
             i.id === `tool-${id}` ? { ...i, meta: status, status } : i,
           ),
           plan: planFromTool ?? s.plan,
         }));
+        if (isToolDone(status) && isMutatingTool(title, kindStr)) {
+          scheduleGitRefresh(sessionId);
+        }
       }
     }).then(track);
 
@@ -464,7 +556,7 @@ export default function App() {
       cancelled = true;
       unsubs.forEach((u) => u());
     };
-  }, [patchSession]);
+  }, [patchSession, scheduleGitRefresh, touchActivity]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -740,9 +832,12 @@ export default function App() {
       .filter(Boolean)
       .join(" · ");
 
+    cancelRequested.current.delete(sessionId);
+    lastActivityRef.current[sessionId] = Date.now();
     patchSession(sessionId, (s) => ({
       ...s,
       busy: true,
+      lastActivityAt: Date.now(),
       reviewComments: [],
       items: [
         ...s.items,
@@ -779,6 +874,8 @@ export default function App() {
           text,
         });
       }
+      const wasCancelled = cancelRequested.current.has(sessionId);
+      cancelRequested.current.delete(sessionId);
       const meta = (result?._meta ?? result) as Record<string, unknown> | undefined;
       const out =
         typeof meta?.outputTokens === "number"
@@ -802,26 +899,79 @@ export default function App() {
           {
             id: uid(),
             role: "system",
-            text: `Turn complete${model}${out}`,
+            text: wasCancelled
+              ? `Turn ended after stop${model}${out}`
+              : `Turn complete${model}${out}`,
             meta: "stop",
           },
         ],
       }));
       await refreshDisk();
-      if (active.cwd) void refreshGit(active.cwd, gitSelected);
+      const cwd =
+        sessionsRef.current.find((s) => s.sessionId === sessionId)?.cwd ??
+        active.cwd;
+      if (cwd) void refreshGit(cwd, gitSelectedRef.current);
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      const wasCancelled = cancelRequested.current.has(sessionId);
+      cancelRequested.current.delete(sessionId);
+      if (!wasCancelled) {
+        setError(
+          msg.toLowerCase().includes("timed out")
+            ? "Agent turn timed out (hard ceiling). Click Stop if tools are still running, then try a smaller step."
+            : msg,
+        );
+      }
       patchSession(sessionId, (s) => ({ ...s, busy: false }));
+      const cwd =
+        sessionsRef.current.find((s) => s.sessionId === sessionId)?.cwd;
+      if (cwd) void refreshGit(cwd, gitSelectedRef.current);
     }
   };
 
   const cancel = async () => {
     if (!active) return;
+    const sessionId = active.sessionId;
+    cancelRequested.current.add(sessionId);
     try {
-      await invoke("session_cancel", { sessionId: active.sessionId });
+      await invoke("session_cancel", { sessionId });
+      // Unlock UI immediately — agent may still wind down the current tool.
+      patchSession(sessionId, (s) => ({
+        ...s,
+        busy: false,
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text: "Stop requested — UI unlocked. Wait a moment before sending again if tools are still finishing.",
+            meta: "stop",
+          },
+        ],
+      }));
     } catch (e) {
       setError(String(e));
+      // Still unlock so the user is never stuck behind a hung prompt RPC.
+      patchSession(sessionId, (s) => ({ ...s, busy: false }));
     }
+  };
+
+  /** Force-clear busy without talking to the agent (last-resort stall recovery). */
+  const unlockUi = (sessionId: string) => {
+    cancelRequested.current.add(sessionId);
+    patchSession(sessionId, (s) => ({
+      ...s,
+      busy: false,
+      items: [
+        ...s.items,
+        {
+          id: uid(),
+          role: "system",
+          text: "UI unlocked. If the agent is still working, use Stop or Disconnect, or wait for the turn to finish.",
+          meta: "stop",
+        },
+      ],
+    }));
   };
 
   const respondPermission = async (
@@ -1021,12 +1171,30 @@ export default function App() {
     if (active?.cwd) void refreshGit(active.cwd);
   }, [active?.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const stallSeconds = useMemo(() => {
+    if (!active?.busy) return 0;
+    const last =
+      lastActivityRef.current[active.sessionId] ?? active.lastActivityAt ?? 0;
+    if (!last) return 0;
+    return Math.max(0, Math.floor((clock - last) / 1000));
+  }, [active?.busy, active?.sessionId, active?.lastActivityAt, clock]);
+
+  const isStalled = Boolean(
+    active?.busy &&
+      stallSeconds * 1000 >= STALL_MS &&
+      active.permissions.length === 0 &&
+      !active.planApproval,
+  );
+
   const headerStatus = useMemo(() => {
     if (!grok?.available) return "Grok CLI missing";
     if (!running) return "Disconnected";
     if (!active) return "Connected · no session";
+    if (active.permissions.length > 0) return "Needs permission";
+    if (active.planApproval) return "Plan ready";
+    if (isStalled) return `Quiet ${stallSeconds}s…`;
     return active.busy ? "Running…" : "Ready";
-  }, [grok, running, active]);
+  }, [grok, running, active, isStalled, stallSeconds]);
 
   return (
     <div className="flex h-full flex-col">
@@ -1040,7 +1208,7 @@ export default function App() {
             }`}
           />
           <span className="text-sm font-semibold tracking-wide">Grok Desk</span>
-          <span className="text-xs text-[var(--text-muted)]">v0.6 · Polish</span>
+          <span className="text-xs text-[var(--text-muted)]">v0.7 · Reliability</span>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-[var(--text-muted)]">
           <span className="mono">{headerStatus}</span>
@@ -1293,6 +1461,36 @@ export default function App() {
                   {active.modelId || info?.modelId || "—"}
                 </span>
               </div>
+
+              {isStalled && (
+                <div className="flex flex-wrap items-center gap-2 border-b border-[var(--warning)]/40 bg-[#2a1f08] px-4 py-2 text-xs">
+                  <span className="text-[var(--warning)]">
+                    No agent traffic for {stallSeconds}s — may still be thinking, or
+                    stuck mid-tool.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void cancel()}
+                    className="rounded border border-[var(--warning)]/50 px-2 py-0.5 text-[var(--warning)] hover:bg-[var(--warning)]/10"
+                  >
+                    Stop
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => unlockUi(active.sessionId)}
+                    className="rounded border border-[var(--border)] px-2 py-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
+                  >
+                    Unlock UI
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refreshGit(active.cwd, gitSelected)}
+                    className="rounded border border-[var(--border)] px-2 py-0.5 text-[var(--tool)] hover:bg-[var(--tool)]/10"
+                  >
+                    Refresh diffs
+                  </button>
+                </div>
+              )}
 
               {active.permissions.length > 0 && (
                 <div className="space-y-2 border-b border-[var(--warning)]/40 bg-[#2a1f08] px-4 py-3">

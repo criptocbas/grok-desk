@@ -225,7 +225,20 @@ impl SharedAgent {
         Ok(())
     }
 
+    /// Default timeout for short control-plane RPCs (init, auth, session/new).
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.request_with_timeout(method, params, Duration::from_secs(120))
+            .await
+    }
+
+    /// Long-running agent turns (session/prompt) need hours, not minutes.
+    /// SuperGrok Heavy multi-file plans routinely exceed 5–30+ minutes.
+    pub async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);
@@ -241,7 +254,7 @@ impl SharedAgent {
             return Err(e);
         }
 
-        match tokio::time::timeout(Duration::from_secs(300), rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(v)) => {
                 if let Some(err) = v.get("error") {
                     return Err(AcpError::Msg(err.to_string()));
@@ -425,12 +438,16 @@ impl SharedAgent {
         }
         *self.session_id.lock() = Some(session_id.to_string());
 
-        self.request(
+        // No practical wall-clock limit for a single turn — cancel via session/cancel.
+        // Previously 300s caused "freeze then timeout" on long Heavy runs while the
+        // agent was still healthy (writes keep streaming; UI just looked stuck).
+        self.request_with_timeout(
             "session/prompt",
             json!({
                 "sessionId": session_id,
                 "prompt": blocks
             }),
+            Duration::from_secs(6 * 60 * 60), // 6h hard ceiling
         )
         .await
     }

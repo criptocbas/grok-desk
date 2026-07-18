@@ -32,6 +32,9 @@
 - [x] Line comments on `+` lines → injected into next prompt
 - [x] Thought/transcript caps to avoid webview OOM crashes
 - [x] Real ACP plan approval (`x.ai/exit_plan_mode` handshake)
+- [x] Auto Diff refresh after mutating tools (debounced)
+- [x] Long prompt timeout (6h) — no more 5‑min freeze on Heavy runs
+- [x] Stop unlocks UI immediately + stall banner with Unlock
 
 ## Phase 3 — Workspace
 

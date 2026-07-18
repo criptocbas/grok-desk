@@ -81,6 +81,8 @@ export type DeskSession = {
   permissions: PermissionRequest[];
   busy: boolean;
   createdAt: number;
+  /** Epoch ms of last ACP session update (for stall detection). */
+  lastActivityAt?: number;
   /** Live agent plan (ACP sessionUpdate: plan / todo_write). */
   plan: PlanEntry[];
   /** e.g. "plan" | "default" | "always-approve" from current_mode_update */

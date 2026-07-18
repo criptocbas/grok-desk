@@ -123,14 +123,18 @@ export function DiffPane({
 
       {open && (
         <>
-          <div className="flex gap-1.5 border-b border-[var(--border)] p-2">
+          <div className="flex items-center gap-1.5 border-b border-[var(--border)] p-2">
             <button
               onClick={onRefresh}
               disabled={loading}
               className="rounded border border-[var(--border)] px-2 py-1 text-[11px] hover:border-[var(--tool)] disabled:opacity-40"
+              title="Refresh git status and selected file patch"
             >
               {loading ? "…" : "↻ Refresh"}
             </button>
+            <span className="text-[10px] text-[var(--text-muted)]">
+              auto after writes
+            </span>
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col">
