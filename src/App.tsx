@@ -916,13 +916,34 @@ export default function App() {
       const wasCancelled = cancelRequested.current.has(sessionId);
       cancelRequested.current.delete(sessionId);
       if (!wasCancelled) {
+        const timedOut =
+          msg.toLowerCase().includes("timed out") ||
+          msg.toLowerCase().includes("timeout");
         setError(
-          msg.toLowerCase().includes("timed out")
-            ? "Agent turn timed out (hard ceiling). Click Stop if tools are still running, then try a smaller step."
+          timedOut
+            ? "UI stopped waiting on this turn. The agent may still have written files — check Diff / git status, then resume or Stop."
             : msg,
         );
+        if (timedOut) {
+          patchSession(sessionId, (s) => ({
+            ...s,
+            busy: false,
+            items: [
+              ...s.items,
+              {
+                id: uid(),
+                role: "system",
+                text: "Turn wait ended (timeout). Diff auto-refreshed — verify disk before re-running the same plan.",
+                meta: "stop",
+              },
+            ],
+          }));
+        } else {
+          patchSession(sessionId, (s) => ({ ...s, busy: false }));
+        }
+      } else {
+        patchSession(sessionId, (s) => ({ ...s, busy: false }));
       }
-      patchSession(sessionId, (s) => ({ ...s, busy: false }));
       const cwd =
         sessionsRef.current.find((s) => s.sessionId === sessionId)?.cwd;
       if (cwd) void refreshGit(cwd, gitSelectedRef.current);
