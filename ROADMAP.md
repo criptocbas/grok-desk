@@ -1,7 +1,7 @@
 # Grok Desk — Roadmap
 
-**Current version:** 0.7.x  
-**Current phase focus:** Phase 3 — Workspace  
+**Current version:** 0.8.x  
+**Current phase focus:** Phase 3 — Workspace (control surface shipped; chrome next)  
 **Explicitly deferred:** GrokLink / phone remote commander (PC product first)
 
 ## Phase 0 — ACP spike ✅
@@ -41,15 +41,17 @@
 - [x] Stop unlocks UI immediately + stall banner with Unlock
 - [x] Richer markdown, plan expand, image paste
 
-## Phase 3 — Workspace ← **next**
+## Phase 3 — Workspace ← **in progress**
 
 Priority order is flexible; pick with the user:
 
-- [ ] Model + effort picker (surface agent model state if available)
-- [ ] Permission modes (ask / always-approve for the session)
-- [ ] OS notifications when a background session finishes
+- [x] Model + effort picker (`session/set_model` + `_meta.reasoningEffort`)
+- [x] Permission modes (ask / always-approve per session tab — client auto-approve)
+- [x] OS notifications when a background session finishes (and when a background tab needs permission)
 - [ ] Embedded terminal (PTY in project cwd)
 - [ ] File tree + open in external editor
+- [ ] Slash command / skill palette (Tier 2)
+- [ ] Richer tool / subagent / background-task presentation (Tier 2)
 
 ## Phase 4 — Ship loop
 

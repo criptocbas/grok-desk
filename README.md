@@ -4,14 +4,17 @@
 
 Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://agentclientprotocol.com) to `grok agent stdio`.
 
-![Phase 3 next](https://img.shields.io/badge/phase-3%20workspace-00a8ff)
-![v0.7](https://img.shields.io/badge/version-0.7-blue)
+![Phase 3](https://img.shields.io/badge/phase-3%20workspace-00a8ff)
+![v0.8](https://img.shields.io/badge/version-0.8-blue)
 
-## Features (v0.7)
+## Features (v0.8)
 
 - Connect to Grok Build (`grok agent stdio`) with SuperGrok Heavy (via CLI cached auth)
 - **Multi-session mission control** — parallel tabs on one agent process
 - Resume recent work from `~/.grok/sessions` (Recents)
+- **Model + effort pickers** — per-session via ACP `session/set_model`
+- **Permission modes** — Ask vs Always-approve per tab (auto-allows tool prompts)
+- **OS notifications** when a background tab finishes a turn or needs permission
 - **Plan pane** — live checklist; Enter plan mode · Approve · Revise (real `exit_plan_mode` handshake)
 - **Diff pane** — git status/diff; auto-refresh after file-mutating tools; click `+` lines for review notes
 - Review notes inject into the next prompt automatically
@@ -59,7 +62,7 @@ grok-desk/
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md). **Phases 0–2 done.** Next: Phase 3 (workspace: terminal, permission modes, model/effort picker).
+See [ROADMAP.md](./ROADMAP.md). **Phases 0–2 done.** Phase 3 control surface shipped (model/effort/permission modes/notifications); next: terminal, file tree, ship loop.
 
 **Deferred:** phone remote / GrokLink — build the PC product first.
 

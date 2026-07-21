@@ -51,6 +51,31 @@ pub struct GrokStatus {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortOption {
+    pub id: String,
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub model_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub supports_reasoning_effort: bool,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub reasoning_efforts: Vec<EffortOption>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
@@ -58,6 +83,11 @@ pub struct AgentInfo {
     pub model_id: Option<String>,
     pub subscription_tier: Option<String>,
     pub auth_email: Option<String>,
+    /// Models advertised at initialize (`_meta.modelState`).
+    #[serde(default)]
+    pub available_models: Vec<ModelOption>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +102,12 @@ pub struct SessionInfo {
     pub updated_at: Option<String>,
     #[serde(default)]
     pub from_disk: bool,
+    /// Current reasoning effort when the model supports it.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Models available for this session (from `session/new` or `session/load`).
+    #[serde(default)]
+    pub available_models: Vec<ModelOption>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +227,8 @@ impl SharedAgent {
                 model_id: None,
                 subscription_tier: None,
                 auth_email: None,
+                available_models: Vec::new(),
+                reasoning_effort: None,
             }),
             child: Mutex::new(child),
         });
@@ -291,11 +329,11 @@ impl SharedAgent {
                     },
                     "clientInfo": {
                         "name": "grok-desk",
-                        "version": "0.1.0"
+                        "version": "0.8.0"
                     },
                     "_meta": {
                         "clientType": "grok-desk",
-                        "clientVersion": "0.1.0"
+                        "clientVersion": "0.8.0"
                     }
                 }),
             )
@@ -306,10 +344,7 @@ impl SharedAgent {
             .and_then(|m| m.get("agentVersion"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let model_id = init
-            .pointer("/_meta/modelState/currentModelId")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let model_state = parse_model_state(init.pointer("/_meta/modelState"));
         let default_auth = init
             .pointer("/_meta/defaultAuthMethodId")
             .and_then(|v| v.as_str())
@@ -319,7 +354,9 @@ impl SharedAgent {
         {
             let mut info = self.info.lock();
             info.agent_version = agent_version;
-            info.model_id = model_id;
+            info.model_id = model_state.current_model_id.clone();
+            info.available_models = model_state.available_models.clone();
+            info.reasoning_effort = model_state.reasoning_effort.clone();
         }
 
         let auth = self
@@ -367,26 +404,34 @@ impl SharedAgent {
             .ok_or_else(|| AcpError::Msg(format!("no sessionId in response: {result}")))?
             .to_string();
 
-        let model_id = result
-            .pointer("/models/currentModelId")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let model_state = parse_model_state(result.get("models"));
 
         // Track last-used for convenience; multi-session uses explicit ids.
         *self.session_id.lock() = Some(session_id.clone());
         *self.cwd.lock() = Some(cwd_str.clone());
-        if model_id.is_some() {
-            self.info.lock().model_id = model_id.clone();
+        {
+            let mut info = self.info.lock();
+            if model_state.current_model_id.is_some() {
+                info.model_id = model_state.current_model_id.clone();
+            }
+            if !model_state.available_models.is_empty() {
+                info.available_models = model_state.available_models.clone();
+            }
+            if model_state.reasoning_effort.is_some() {
+                info.reasoning_effort = model_state.reasoning_effort.clone();
+            }
         }
 
         let title = folder_title(&cwd_str);
         Ok(SessionInfo {
             session_id,
             cwd: cwd_str,
-            model_id,
+            model_id: model_state.current_model_id,
             title: Some(title),
             updated_at: None,
             from_disk: false,
+            reasoning_effort: model_state.reasoning_effort,
+            available_models: model_state.available_models,
         })
     }
 
@@ -399,7 +444,7 @@ impl SharedAgent {
             .to_string();
 
         // Replay streams as session/update notifications before this returns.
-        let _ = self
+        let result = self
             .request(
                 "session/load",
                 json!({
@@ -413,13 +458,114 @@ impl SharedAgent {
         *self.session_id.lock() = Some(session_id.to_string());
         *self.cwd.lock() = Some(cwd_str.clone());
 
+        let model_state = parse_model_state(result.get("models"));
+        {
+            let mut info = self.info.lock();
+            if model_state.current_model_id.is_some() {
+                info.model_id = model_state.current_model_id.clone();
+            }
+            if !model_state.available_models.is_empty() {
+                info.available_models = model_state.available_models.clone();
+            }
+            if model_state.reasoning_effort.is_some() {
+                info.reasoning_effort = model_state.reasoning_effort.clone();
+            }
+        }
+
+        let info = self.info.lock().clone();
         Ok(SessionInfo {
             session_id: session_id.to_string(),
             cwd: cwd_str.clone(),
-            model_id: self.info.lock().model_id.clone(),
+            model_id: model_state
+                .current_model_id
+                .or(info.model_id.clone()),
             title: Some(folder_title(&cwd_str)),
             updated_at: None,
             from_disk: true,
+            reasoning_effort: model_state
+                .reasoning_effort
+                .or(info.reasoning_effort.clone()),
+            available_models: if model_state.available_models.is_empty() {
+                info.available_models
+            } else {
+                model_state.available_models
+            },
+        })
+    }
+
+    /// Switch model / reasoning effort for a session (`session/set_model`).
+    ///
+    /// Grok accepts optional `_meta.reasoningEffort` (`low` | `medium` | `high` | …).
+    pub async fn set_model(
+        &self,
+        session_id: &str,
+        model_id: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<SessionInfo> {
+        if session_id.trim().is_empty() {
+            return Err(AcpError::Msg("session_id required".into()));
+        }
+        if model_id.trim().is_empty() {
+            return Err(AcpError::Msg("model_id required".into()));
+        }
+
+        let mut params = json!({
+            "sessionId": session_id,
+            "modelId": model_id,
+        });
+        if let Some(effort) = reasoning_effort {
+            if !effort.trim().is_empty() {
+                params["_meta"] = json!({ "reasoningEffort": effort });
+            }
+        }
+
+        let result = self.request("session/set_model", params).await?;
+
+        // Surface errors embedded in result if any.
+        if let Some(err) = result.pointer("/_meta/model/Err").and_then(|v| v.as_str()) {
+            return Err(AcpError::Msg(format!("set_model failed: {err}")));
+        }
+
+        let applied_model = result
+            .pointer("/_meta/model/Ok")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| Some(model_id.to_string()));
+
+        {
+            let mut info = self.info.lock();
+            info.model_id = applied_model.clone();
+            if let Some(effort) = reasoning_effort {
+                if !effort.trim().is_empty() {
+                    info.reasoning_effort = Some(effort.to_string());
+                    // Keep available model entries in sync for UI.
+                    for m in &mut info.available_models {
+                        if applied_model
+                            .as_ref()
+                            .map(|id| id == &m.model_id)
+                            .unwrap_or(false)
+                        {
+                            m.reasoning_effort = Some(effort.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let cwd = self.cwd.lock().clone().unwrap_or_default();
+        let info = self.info.lock().clone();
+        Ok(SessionInfo {
+            session_id: session_id.to_string(),
+            cwd,
+            model_id: applied_model,
+            title: None,
+            updated_at: None,
+            from_disk: false,
+            reasoning_effort: reasoning_effort
+                .filter(|e| !e.trim().is_empty())
+                .map(|e| e.to_string())
+                .or(info.reasoning_effort),
+            available_models: info.available_models,
         })
     }
 
@@ -607,16 +753,176 @@ impl SharedAgent {
     pub fn session(&self) -> Option<SessionInfo> {
         let sid = self.session_id.lock().clone()?;
         let cwd = self.cwd.lock().clone().unwrap_or_default();
+        let info = self.info.lock().clone();
         Some(SessionInfo {
             session_id: sid,
             title: Some(folder_title(&cwd)),
             cwd,
-            model_id: self.info.lock().model_id.clone(),
+            model_id: info.model_id.clone(),
             updated_at: None,
             from_disk: false,
+            reasoning_effort: info.reasoning_effort.clone(),
+            available_models: info.available_models,
         })
     }
 }
+
+#[derive(Debug, Clone, Default)]
+struct ParsedModelState {
+    current_model_id: Option<String>,
+    reasoning_effort: Option<String>,
+    available_models: Vec<ModelOption>,
+}
+
+fn parse_model_state(models: Option<&Value>) -> ParsedModelState {
+    let Some(models) = models else {
+        return ParsedModelState::default();
+    };
+
+    let current_model_id = models
+        .get("currentModelId")
+        .or_else(|| models.get("current_model_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut available_models = Vec::new();
+    let mut reasoning_effort: Option<String> = None;
+
+    if let Some(arr) = models
+        .get("availableModels")
+        .or_else(|| models.get("available_models"))
+        .and_then(|v| v.as_array())
+    {
+        for m in arr {
+            let model_id = m
+                .get("modelId")
+                .or_else(|| m.get("model_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if model_id.is_empty() {
+                continue;
+            }
+            let name = m
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&model_id)
+                .to_string();
+            let description = m
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let meta = m.get("_meta").cloned().unwrap_or(Value::Null);
+            let supports = meta
+                .get("supportsReasoningEffort")
+                .or_else(|| meta.get("supports_reasoning_effort"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let effort = meta
+                .get("reasoningEffort")
+                .or_else(|| meta.get("reasoning_effort"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if current_model_id
+                .as_ref()
+                .map(|id| id == &model_id)
+                .unwrap_or(false)
+            {
+                reasoning_effort = effort.clone();
+            }
+            let mut efforts = Vec::new();
+            if let Some(list) = meta
+                .get("reasoningEfforts")
+                .or_else(|| meta.get("reasoning_efforts"))
+                .and_then(|v| v.as_array())
+            {
+                for e in list {
+                    let id = e
+                        .get("id")
+                        .or_else(|| e.get("value"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let value = e
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&id)
+                        .to_string();
+                    let label = e
+                        .get("label")
+                        .or_else(|| e.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&value)
+                        .to_string();
+                    let description = e
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    efforts.push(EffortOption {
+                        id,
+                        value,
+                        label,
+                        description,
+                    });
+                }
+            }
+            available_models.push(ModelOption {
+                model_id,
+                name,
+                description,
+                supports_reasoning_effort: supports || !efforts.is_empty(),
+                reasoning_effort: effort,
+                reasoning_efforts: efforts,
+            });
+        }
+    }
+
+    // Fallback: only currentModelId present
+    if available_models.is_empty() {
+        if let Some(id) = &current_model_id {
+            available_models.push(ModelOption {
+                model_id: id.clone(),
+                name: id.clone(),
+                description: None,
+                supports_reasoning_effort: false,
+                reasoning_effort: None,
+                reasoning_efforts: vec![],
+            });
+        }
+    }
+
+    ParsedModelState {
+        current_model_id,
+        reasoning_effort,
+        available_models,
+    }
+}
+
+/// Best-effort desktop notification (Linux: notify-send).
+pub fn show_notification(title: &str, body: &str) -> Result<()> {
+    match Command::new("notify-send")
+        .args([
+            "--app-name=Grok Desk",
+            "--urgency=normal",
+            title,
+            body,
+        ])
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(AcpError::Msg(format!(
+            "notify-send exited with {status}"
+        ))),
+        Err(e) => Err(AcpError::Msg(format!(
+            "notify-send unavailable ({e}). Install libnotify."
+        ))),
+    }
+}
+
+
 
 fn dirs_home() -> Option<String> {
     std::env::var("HOME").ok()

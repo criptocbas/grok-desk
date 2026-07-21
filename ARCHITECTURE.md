@@ -21,7 +21,7 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 4. **Permissions are first-class** — every `session/request_permission` becomes a card with options.
 5. **Plan approval is a reverse RPC** — `x.ai/exit_plan_mode` must be answered or the agent hangs.
 
-## Process model (v0.7)
+## Process model (v0.8)
 
 - One `grok agent stdio` process per app connection.
 - One agent process can host **many** ACP sessions (`session/new` / `session/load`).
@@ -29,6 +29,9 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 - Initialize → authenticate (`cached_token` from `~/.grok/auth.json`) → sessions.
 - **Prompt RPC timeout is 6 hours** (`request_with_timeout` in `acp.rs`). Control-plane RPCs use ~120s.
 - **Cancel** sends `session/cancel` and clears UI `busy` immediately (agent may still finish the current tool).
+- **Model / effort** via ACP `session/set_model` (optional `_meta.reasoningEffort`). Catalog from `session/new` / initialize `_meta.modelState`.
+- **Permission mode** is a Desk per-tab policy: `always-approve` auto-answers `session/request_permission` with an allow option (agent still enforces deny rules/hooks).
+- **Background notifications** via `notify-send` when a non-active tab finishes a turn or needs permission.
 
 ### Client capabilities (tools)
 
@@ -72,12 +75,14 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `session_prompt` | `session/prompt` (sessionId + text) |
 | `session_prompt_with_images` | prompt + image/resource blocks |
 | `session_cancel` | `session/cancel` (sessionId) |
+| `session_set_model` | `session/set_model` (+ optional reasoning effort) |
 | `list_disk_sessions` | Scan `~/.grok/sessions/**/summary.json` |
 | `permission_respond` | Answer permission request |
 | `plan_approval_respond` | Answer `exit_plan_mode` (approved/cancelled/abandoned) |
 | `read_plan_doc` | Load session `plan.md` if present |
 | `git_status` / `git_diff` | Working tree for Diff pane |
 | `default_cwd` | Sensible starting folder |
+| `show_notification` | OS notification (`notify-send` on Linux) |
 
 ## UI reliability (frontend)
 

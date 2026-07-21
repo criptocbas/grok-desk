@@ -4,11 +4,29 @@ export type GrokStatus = {
   version: string | null;
 };
 
+export type EffortOption = {
+  id: string;
+  value: string;
+  label: string;
+  description?: string | null;
+};
+
+export type ModelOption = {
+  modelId: string;
+  name: string;
+  description?: string | null;
+  supportsReasoningEffort?: boolean;
+  reasoningEffort?: string | null;
+  reasoningEfforts?: EffortOption[];
+};
+
 export type AgentInfo = {
   agentVersion: string | null;
   modelId: string | null;
   subscriptionTier: string | null;
   authEmail: string | null;
+  availableModels?: ModelOption[];
+  reasoningEffort?: string | null;
 };
 
 export type SessionInfo = {
@@ -18,6 +36,8 @@ export type SessionInfo = {
   title?: string | null;
   updatedAt?: string | null;
   fromDisk?: boolean;
+  reasoningEffort?: string | null;
+  availableModels?: ModelOption[];
 };
 
 export type DiskSession = {
@@ -70,12 +90,36 @@ export type PlanEntry = {
   status: PlanEntryStatus;
 };
 
+/** Desk-side permission policy for a session tab. */
+export type PermissionMode = "default" | "always-approve";
+
+/** Prompt waiting while the session is mid-turn. */
+export type QueuedPrompt = {
+  id: string;
+  /** Text sent to the agent (may include review comments). */
+  text: string;
+  /** Short label shown in the queue strip / transcript. */
+  displayText: string;
+  images: {
+    mimeType: string;
+    data: string;
+    name: string;
+  }[];
+};
+
 /** One open tab in the mission-control sidebar. */
 export type DeskSession = {
   sessionId: string;
   cwd: string;
   title: string;
   modelId?: string | null;
+  /** Reasoning effort for the active model (low/medium/high/…). */
+  reasoningEffort?: string | null;
+  availableModels?: ModelOption[];
+  /** Client-side tool permission policy for this tab. */
+  permissionMode?: PermissionMode;
+  /** Prompts to run when the current turn finishes. */
+  promptQueue: QueuedPrompt[];
   items: ChatItem[];
   tools: ToolCallItem[];
   permissions: PermissionRequest[];

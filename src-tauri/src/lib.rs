@@ -244,6 +244,31 @@ fn default_cwd() -> String {
         .unwrap_or_else(|_| "/home".into())
 }
 
+/// Switch model and/or reasoning effort for an open session (`session/set_model`).
+#[tauri::command]
+async fn session_set_model(
+    state: State<'_, AppState>,
+    session_id: String,
+    model_id: String,
+    reasoning_effort: Option<String>,
+) -> Result<SessionInfo, String> {
+    let agent = state.agent()?;
+    agent
+        .set_model(
+            &session_id,
+            &model_id,
+            reasoning_effort.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// OS notification (background turn finished, etc.). Linux: notify-send.
+#[tauri::command]
+fn show_notification(title: String, body: String) -> Result<(), String> {
+    acp::show_notification(&title, &body).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -263,6 +288,7 @@ pub fn run() {
             session_prompt,
             session_prompt_with_images,
             session_cancel,
+            session_set_model,
             permission_respond,
             plan_approval_respond,
             list_disk_sessions,
@@ -270,6 +296,7 @@ pub fn run() {
             git_status,
             git_diff,
             default_cwd,
+            show_notification,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

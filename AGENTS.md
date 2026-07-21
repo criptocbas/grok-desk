@@ -4,7 +4,7 @@
 
 Desktop shell for Grok Build. UI in React/Tauri; agent runtime is the official `grok` CLI via ACP (`grok agent stdio`). SuperGrok Heavy works through `~/.grok/auth.json` (`cached_token`).
 
-**Version:** 0.7.x · **Phases 0–2 complete** · Next is Phase 3 (see `ROADMAP.md`).
+**Version:** 0.8.x · **Phases 0–2 complete** · Phase 3 control surface (model/effort/perms/notify) shipped — see `ROADMAP.md`.
 
 ## Rules
 
@@ -27,6 +27,8 @@ Desktop shell for Grok Build. UI in React/Tauri; agent runtime is the official `
 | Diff pane | Auto-refresh (debounced) after mutating tools (`write`, `search_replace`, terminal, …); manual Refresh still available. |
 | Stop / stall | Cancel unlocks UI immediately; ~90s silence shows stall banner (Stop / Unlock UI / Refresh diffs). |
 | Thoughts | Hard-capped in UI (`MAX_THOUGHT_CHARS`) — unbounded streams OOM the webview. |
+| Model / effort | Prefer `session/set_model` (+ `_meta.reasoningEffort`); do not reimplement model routing. |
+| Permission mode | Desk-side per tab; `always-approve` auto-answers allow options — never flip client `fs`/`terminal` to “fix” permissions. |
 
 ## Commands
 

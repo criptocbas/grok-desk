@@ -16,15 +16,53 @@ import type {
   DiskSession,
   GitFileStatus,
   GrokStatus,
+  ModelOption,
+  PermissionMode,
+  PermissionOption,
   PermissionRequest,
   PlanApprovalRequest,
   PlanEntry,
+  QueuedPrompt,
   ReviewComment,
   SessionInfo,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
+import {
+  InspectorRail,
+  type InspectorTab,
+} from "./components/InspectorRail";
 import { RichText } from "./components/RichText";
+
+const DEFAULT_EFFORTS = [
+  { id: "high", value: "high", label: "High" },
+  { id: "medium", value: "medium", label: "Medium" },
+  { id: "low", value: "low", label: "Low" },
+] as const;
+
+function pickAllowOption(options: PermissionOption[]): string | null {
+  if (!options.length) return null;
+  const always = options.find((o) =>
+    (o.kind || "").toLowerCase().includes("allow_always"),
+  );
+  if (always) return always.optionId;
+  const once = options.find((o) =>
+    (o.kind || "").toLowerCase().includes("allow"),
+  );
+  if (once) return once.optionId;
+  // Prefer non-reject by name
+  const byName = options.find((o) =>
+    /allow|approve|yes/i.test(o.name || o.optionId),
+  );
+  if (byName) return byName.optionId;
+  return options[0]?.optionId ?? null;
+}
+
+function notifyOs(title: string, body: string) {
+  void invoke("show_notification", { title, body }).catch(() => {
+    /* optional — notify-send may be missing */
+  });
+}
 
 /** Prevent webview OOM from multi-hour thought streams / session replay. */
 const MAX_THOUGHT_CHARS = 6_000;
@@ -116,8 +154,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [diskSessions, setDiskSessions] = useState<DiskSession[]>([]);
   const [showRecents, setShowRecents] = useState(false);
-  const [planOpen, setPlanOpen] = useState(true);
-  const [diffOpen, setDiffOpen] = useState(true);
+  /** Right inspector: closed by default — chat-first. */
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
   const [gitPatch, setGitPatch] = useState("");
@@ -134,13 +173,54 @@ export default function App() {
   const planApprovalRef = useRef<Record<string, PlanApprovalRequest>>({});
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   const gitSelectedRef = useRef(gitSelected);
   gitSelectedRef.current = gitSelected;
   const gitRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** sessionIds where user hit Stop — late prompt resolve should not re-busy. */
   const cancelRequested = useRef<Set<string>>(new Set());
+  /** sessionIds with an in-flight session/prompt (busy may be false after Stop). */
+  const inFlightRef = useRef<Set<string>>(new Set());
+  /** Auto-scroll only while the user is pinned near the bottom (per session). */
+  const stickBottomRef = useRef<Record<string, boolean>>({});
   /** Last ACP traffic per session (stall detection without re-render spam). */
   const lastActivityRef = useRef<Record<string, number>>({});
+  /** Re-render when stick-to-bottom flips so “Jump to latest” can show. */
+  const [stickTick, setStickTick] = useState(0);
+
+  const NEAR_BOTTOM_PX = 96;
+
+  const isStuckToBottom = (sessionId: string | null | undefined) => {
+    if (!sessionId) return true;
+    return stickBottomRef.current[sessionId] !== false;
+  };
+
+  const setStuckToBottom = (sessionId: string, stuck: boolean) => {
+    const prev = stickBottomRef.current[sessionId];
+    if (prev === stuck) return;
+    stickBottomRef.current[sessionId] = stuck;
+    setStickTick((n) => n + 1);
+  };
+
+  const onTranscriptScroll = useCallback(() => {
+    const el = scrollRef.current;
+    const sid = activeIdRef.current;
+    if (!el || !sid) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setStuckToBottom(sid, dist <= NEAR_BOTTOM_PX);
+  }, []);
+
+  const scrollToLatest = useCallback(
+    (sessionId?: string | null, behavior: ScrollBehavior = "smooth") => {
+      const sid = sessionId ?? activeIdRef.current;
+      if (sid) setStuckToBottom(sid, true);
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollTo({ top: el.scrollHeight, behavior });
+    },
+    [],
+  );
   // Per-session streaming buffers keyed by sessionId
   const streamBuf = useRef<
     Record<
@@ -312,17 +392,34 @@ export default function App() {
       const sid = p.sessionId;
       if (!sid) return;
       touchActivity(sid);
+      const sess = sessionsRef.current.find((s) => s.sessionId === sid);
+      // Client-side always-approve: auto-select an allow option without a card.
+      if (sess?.permissionMode === "always-approve") {
+        const optionId = pickAllowOption(p.options ?? []);
+        void invoke("permission_respond", {
+          requestId: p.requestId,
+          optionId,
+        }).catch((err) => setError(String(err)));
+        return;
+      }
       patchSession(sid, (s) => ({
         ...s,
         permissions: [...s.permissions, p],
       }));
+      // Nudge if a background tab needs attention
+      if (sid !== activeIdRef.current) {
+        notifyOs(
+          "Grok Desk · permission needed",
+          sess?.title || shortId(sid),
+        );
+      }
     }).then(track);
 
     void listen<PlanApprovalRequest>("acp://plan-approval", (e) => {
       const p = e.payload;
       if (!p?.sessionId) return;
       planApprovalRef.current[p.sessionId] = p;
-      setPlanOpen(true);
+      setInspectorTab("plan");
       setActiveId(p.sessionId);
       patchSession(p.sessionId, (s) => ({
         ...s,
@@ -558,12 +655,78 @@ export default function App() {
     };
   }, [patchSession, scheduleGitRefresh, touchActivity]);
 
+  // Follow streaming only if the user hasn't scrolled up to read history.
   useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [active?.items, active?.permissions]);
+    if (!active?.sessionId) return;
+    if (!isStuckToBottom(active.sessionId)) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // stickTick intentionally omitted — only follow content growth when stuck.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.items, active?.permissions, active?.sessionId]);
+
+  // Keyboard shortcuts (mission control)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "TEXTAREA" ||
+          target.tagName === "INPUT" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+
+      // Ctrl+/ or Cmd+/ — shortcuts help (works even while typing)
+      if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+
+      if (e.key === "Escape") {
+        if (showShortcuts) {
+          setShowShortcuts(false);
+          return;
+        }
+        if (inspectorTab) {
+          setInspectorTab(null);
+          return;
+        }
+      }
+
+      // Alt+P / Alt+D — inspector (avoid clashing with browser menus when possible)
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const k = e.key.toLowerCase();
+        if (k === "p") {
+          e.preventDefault();
+          setInspectorTab((t) => (t === "plan" ? null : "plan"));
+          return;
+        }
+        if (k === "d") {
+          e.preventDefault();
+          setInspectorTab((t) => (t === "diff" ? null : "diff"));
+          return;
+        }
+      }
+
+      if (typing) return;
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showShortcuts, inspectorTab]);
+
+  // Auto-open Plan when agent drops a plan checklist (once per arrival)
+  useEffect(() => {
+    if (!active) return;
+    if (active.planApproval) {
+      setInspectorTab("plan");
+      return;
+    }
+    if (active.modeId === "plan" && active.plan.length > 0) {
+      setInspectorTab((t) => t ?? "plan");
+    }
+  }, [active?.planApproval, active?.modeId, active?.plan.length, active?.sessionId]);
 
   const connect = async () => {
     setConnecting(true);
@@ -602,6 +765,10 @@ export default function App() {
         cwd: s.cwd,
         title: s.title || folderName(s.cwd),
         modelId: s.modelId,
+        reasoningEffort: s.reasoningEffort ?? null,
+        availableModels: s.availableModels ?? info?.availableModels ?? [],
+        permissionMode: "default",
+        promptQueue: [],
         items: [
           {
             id: uid(),
@@ -619,6 +786,7 @@ export default function App() {
         reviewComments: [],
         planApproval: null,
       };
+      stickBottomRef.current[s.sessionId] = true;
       setSessions((prev) => [desk, ...prev]);
       setActiveId(s.sessionId);
       void refreshGit(s.cwd);
@@ -657,6 +825,10 @@ export default function App() {
           cwd: d.cwd,
           title: d.title || folderName(d.cwd),
           modelId: d.modelId,
+          reasoningEffort: null,
+          availableModels: info?.availableModels ?? [],
+          permissionMode: "default",
+          promptQueue: [],
           items: [
             {
               id: uid(),
@@ -674,6 +846,7 @@ export default function App() {
           reviewComments: [],
           planApproval: null,
         };
+        stickBottomRef.current[d.sessionId] = true;
         return [desk, ...prev];
       });
       setActiveId(d.sessionId);
@@ -693,7 +866,7 @@ export default function App() {
       };
       setCwd(d.cwd);
 
-      await invoke<SessionInfo>("session_load", {
+      const loaded = await invoke<SessionInfo>("session_load", {
         sessionId: d.sessionId,
         cwd: d.cwd,
       });
@@ -712,6 +885,12 @@ export default function App() {
         ...s,
         busy: false,
         planDoc,
+        modelId: loaded.modelId ?? s.modelId,
+        reasoningEffort: loaded.reasoningEffort ?? s.reasoningEffort,
+        availableModels:
+          loaded.availableModels?.length
+            ? loaded.availableModels
+            : s.availableModels,
         items: [
           ...s.items
             .filter((i) => i.role !== "system" || !i.text.startsWith("Loading"))
@@ -748,6 +927,8 @@ export default function App() {
       return next;
     });
     delete streamBuf.current[sessionId];
+    delete stickBottomRef.current[sessionId];
+    inFlightRef.current.delete(sessionId);
   };
 
   const addImageFiles = async (files: FileList | File[]) => {
@@ -786,30 +967,29 @@ export default function App() {
     }
   };
 
-  const send = async () => {
-    if (!active || active.busy) return;
-    if (!prompt.trim() && pendingImages.length === 0) return;
-    const userText = prompt.trim();
-    let text = userText;
-    const sessionId = active.sessionId;
-    const comments = active.reviewComments ?? [];
-    const images = [...pendingImages];
-    if (comments.length > 0) {
-      const block = comments
-        .map((c) => {
-          const loc =
-            c.startLine != null
-              ? `${c.path}:${c.startLine}`
-              : c.path;
-          const snip = c.snippet ? `\n  > ${c.snippet}` : "";
-          return `- ${loc}: ${c.body}${snip}`;
-        })
-        .join("\n");
-      text =
-        `${text || "Please address the review comments."}\n\n## Review comments (apply these fixes)\n${block}`;
-    }
-    setPrompt("");
-    setPendingImages([]);
+  const removeQueuedPrompt = (sessionId: string, queueId: string) => {
+    patchSession(sessionId, (s) => ({
+      ...s,
+      promptQueue: (s.promptQueue ?? []).filter((q) => q.id !== queueId),
+    }));
+  };
+
+  /** Run one prompt turn (must not be called while this session is already in flight). */
+  const runPrompt = async (
+    sessionId: string,
+    opts: {
+      text: string;
+      displayText: string;
+      images: { mimeType: string; data: string; name: string }[];
+      /** Clear review comments when starting (immediate send from composer). */
+      clearReviewComments?: boolean;
+      titleHint?: string;
+    },
+  ) => {
+    if (inFlightRef.current.has(sessionId)) return;
+    inFlightRef.current.add(sessionId);
+
+    const { text, displayText, images, clearReviewComments, titleHint } = opts;
     setError(null);
     const buf = ensureBuf(sessionId);
     buf.assistant = "";
@@ -820,38 +1000,33 @@ export default function App() {
     const userMsgId = uid();
     buf.uId = userMsgId;
 
-    const displayBits = [
-      userText || (images.length ? "[image]" : ""),
-      comments.length
-        ? `(${comments.length} review note${comments.length === 1 ? "" : "s"})`
-        : "",
-      images.length
-        ? `(${images.length} image${images.length === 1 ? "" : "s"})`
-        : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-
     cancelRequested.current.delete(sessionId);
     lastActivityRef.current[sessionId] = Date.now();
+    // Follow the new turn at the bottom so send feels responsive.
+    setStuckToBottom(sessionId, true);
+
     patchSession(sessionId, (s) => ({
       ...s,
       busy: true,
       lastActivityAt: Date.now(),
-      reviewComments: [],
+      reviewComments: clearReviewComments ? [] : s.reviewComments,
       items: [
         ...s.items,
         {
           id: userMsgId,
           role: "user",
-          text: displayBits || userText || text,
+          text: displayText || text,
         },
       ],
       title:
-        s.title === folderName(s.cwd) && userText.length > 0 && userText.length < 60
-          ? userText
+        titleHint &&
+        s.title === folderName(s.cwd) &&
+        titleHint.length > 0 &&
+        titleHint.length < 60
+          ? titleHint
           : s.title,
     }));
+    requestAnimationFrame(() => scrollToLatest(sessionId, "auto"));
 
     try {
       let result: Record<string, unknown>;
@@ -876,7 +1051,9 @@ export default function App() {
       }
       const wasCancelled = cancelRequested.current.has(sessionId);
       cancelRequested.current.delete(sessionId);
-      const meta = (result?._meta ?? result) as Record<string, unknown> | undefined;
+      const meta = (result?._meta ?? result) as
+        | Record<string, unknown>
+        | undefined;
       const out =
         typeof meta?.outputTokens === "number"
           ? ` · ${meta.outputTokens} out`
@@ -891,6 +1068,9 @@ export default function App() {
       b.tId = null;
       b.uId = null;
 
+      const doneLabel = wasCancelled
+        ? `Turn ended after stop${model}${out}`
+        : `Turn complete${model}${out}`;
       patchSession(sessionId, (s) => ({
         ...s,
         busy: false,
@@ -899,17 +1079,20 @@ export default function App() {
           {
             id: uid(),
             role: "system",
-            text: wasCancelled
-              ? `Turn ended after stop${model}${out}`
-              : `Turn complete${model}${out}`,
+            text: doneLabel,
             meta: "stop",
           },
         ],
       }));
+      if (!wasCancelled && sessionId !== activeIdRef.current) {
+        const title =
+          sessionsRef.current.find((s) => s.sessionId === sessionId)?.title ||
+          shortId(sessionId);
+        notifyOs("Grok Desk · turn complete", title);
+      }
       await refreshDisk();
-      const cwd =
-        sessionsRef.current.find((s) => s.sessionId === sessionId)?.cwd ??
-        active.cwd;
+      const cwd = sessionsRef.current.find((s) => s.sessionId === sessionId)
+        ?.cwd;
       if (cwd) void refreshGit(cwd, gitSelectedRef.current);
     } catch (e) {
       const msg = String(e);
@@ -944,10 +1127,132 @@ export default function App() {
       } else {
         patchSession(sessionId, (s) => ({ ...s, busy: false }));
       }
-      const cwd =
-        sessionsRef.current.find((s) => s.sessionId === sessionId)?.cwd;
+      const cwd = sessionsRef.current.find(
+        (s) => s.sessionId === sessionId,
+      )?.cwd;
       if (cwd) void refreshGit(cwd, gitSelectedRef.current);
+    } finally {
+      inFlightRef.current.delete(sessionId);
+      // Drain queue after this turn fully settles.
+      void drainPromptQueue(sessionId);
     }
+  };
+
+  const drainPromptQueue = async (sessionId: string) => {
+    if (inFlightRef.current.has(sessionId)) return;
+    const sess = sessionsRef.current.find((s) => s.sessionId === sessionId);
+    const next = sess?.promptQueue?.[0];
+    if (!next) return;
+
+    // Pop head of queue, then run.
+    patchSession(sessionId, (s) => {
+      const remaining = Math.max(0, (s.promptQueue?.length ?? 1) - 1);
+      return {
+        ...s,
+        promptQueue: (s.promptQueue ?? []).slice(1),
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text:
+              remaining > 0
+                ? `Running queued prompt (${remaining} still queued)…`
+                : "Running queued prompt…",
+            meta: "queue",
+          },
+        ],
+      };
+    });
+
+    await runPrompt(sessionId, {
+      text: next.text,
+      displayText: next.displayText,
+      images: next.images,
+      clearReviewComments: false,
+    });
+  };
+
+  const send = async () => {
+    if (!active) return;
+    if (!prompt.trim() && pendingImages.length === 0) return;
+
+    const userText = prompt.trim();
+    let text = userText;
+    const sessionId = active.sessionId;
+    // Only attach open review comments on an immediate (non-queued) send.
+    const willRunNow =
+      !active.busy && !inFlightRef.current.has(sessionId);
+    const comments =
+      willRunNow && (active.reviewComments?.length ?? 0) > 0
+        ? active.reviewComments
+        : [];
+    const images = [...pendingImages];
+    if (comments.length > 0) {
+      const block = comments
+        .map((c) => {
+          const loc =
+            c.startLine != null ? `${c.path}:${c.startLine}` : c.path;
+          const snip = c.snippet ? `\n  > ${c.snippet}` : "";
+          return `- ${loc}: ${c.body}${snip}`;
+        })
+        .join("\n");
+      text = `${text || "Please address the review comments."}\n\n## Review comments (apply these fixes)\n${block}`;
+    }
+
+    const displayBits = [
+      userText || (images.length ? "[image]" : ""),
+      comments.length
+        ? `(${comments.length} review note${comments.length === 1 ? "" : "s"})`
+        : "",
+      images.length
+        ? `(${images.length} image${images.length === 1 ? "" : "s"})`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    setPrompt("");
+    setPendingImages([]);
+
+    if (!willRunNow) {
+      const queued: QueuedPrompt = {
+        id: uid(),
+        text,
+        displayText: displayBits || userText || text,
+        images: images.map((img) => ({
+          mimeType: img.mimeType,
+          data: img.data,
+          name: img.name,
+        })),
+      };
+      patchSession(sessionId, (s) => ({
+        ...s,
+        promptQueue: [...(s.promptQueue ?? []), queued],
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text: `Queued: ${queued.displayText}`,
+            meta: "queue",
+          },
+        ],
+      }));
+      return;
+    }
+
+    await runPrompt(sessionId, {
+      text,
+      displayText: displayBits || userText || text,
+      images: images.map((img) => ({
+        mimeType: img.mimeType,
+        data: img.data,
+        name: img.name,
+      })),
+      clearReviewComments: true,
+      titleHint: userText,
+    });
   };
 
   const cancel = async () => {
@@ -990,6 +1295,73 @@ export default function App() {
           role: "system",
           text: "UI unlocked. If the agent is still working, use Stop or Disconnect, or wait for the turn to finish.",
           meta: "stop",
+        },
+      ],
+    }));
+  };
+
+  const applyModelSettings = async (
+    sessionId: string,
+    modelId: string,
+    reasoningEffort?: string | null,
+  ) => {
+    setError(null);
+    try {
+      const result = await invoke<SessionInfo>("session_set_model", {
+        sessionId,
+        modelId,
+        reasoningEffort: reasoningEffort || null,
+      });
+      patchSession(sessionId, (s) => ({
+        ...s,
+        modelId: result.modelId ?? modelId,
+        reasoningEffort:
+          result.reasoningEffort ?? reasoningEffort ?? s.reasoningEffort,
+        availableModels:
+          result.availableModels?.length
+            ? result.availableModels
+            : s.availableModels,
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text: `Model → ${result.modelId ?? modelId}${
+              reasoningEffort ? ` · effort ${reasoningEffort}` : ""
+            }`,
+            meta: "config",
+          },
+        ],
+      }));
+      setInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              modelId: result.modelId ?? prev.modelId,
+              reasoningEffort:
+                result.reasoningEffort ?? prev.reasoningEffort,
+            }
+          : prev,
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const setPermissionMode = (sessionId: string, mode: PermissionMode) => {
+    patchSession(sessionId, (s) => ({
+      ...s,
+      permissionMode: mode,
+      items: [
+        ...s.items,
+        {
+          id: uid(),
+          role: "system",
+          text:
+            mode === "always-approve"
+              ? "Permission mode → always-approve (auto-allow tool prompts for this tab)"
+              : "Permission mode → ask (show permission cards)",
+          meta: "config",
         },
       ],
     }));
@@ -1217,48 +1589,121 @@ export default function App() {
     return active.busy ? "Running…" : "Ready";
   }, [grok, running, active, isStalled, stallSeconds]);
 
+  const sessionModels: ModelOption[] = useMemo(() => {
+    if (active?.availableModels?.length) return active.availableModels;
+    if (info?.availableModels?.length) return info.availableModels;
+    if (active?.modelId) {
+      return [
+        {
+          modelId: active.modelId,
+          name: active.modelId,
+          supportsReasoningEffort: true,
+          reasoningEfforts: [...DEFAULT_EFFORTS],
+        },
+      ];
+    }
+    return [];
+  }, [active?.availableModels, active?.modelId, info?.availableModels]);
+
+  const effortOptions = useMemo(() => {
+    const mid = active?.modelId;
+    const m = sessionModels.find((x) => x.modelId === mid) ?? sessionModels[0];
+    if (m?.reasoningEfforts?.length) return m.reasoningEfforts;
+    return DEFAULT_EFFORTS.map((e) => ({ ...e, description: null as string | null }));
+  }, [active?.modelId, sessionModels]);
+
+  const supportsEffort = useMemo(() => {
+    const mid = active?.modelId;
+    const m = sessionModels.find((x) => x.modelId === mid) ?? sessionModels[0];
+    return Boolean(
+      m?.supportsReasoningEffort || (m?.reasoningEfforts?.length ?? 0) > 0,
+    );
+  }, [active?.modelId, sessionModels]);
+
+  const planDone = active?.plan.filter((e) => e.status === "completed").length ?? 0;
+  const planTotal = active?.plan.length ?? 0;
+  const planBadge =
+    planTotal > 0 ? `${planDone}/${planTotal}` : active?.planApproval ? "!" : null;
+  const diffBadge =
+    gitFiles.length > 0
+      ? String(gitFiles.length)
+      : (active?.reviewComments?.length ?? 0) > 0
+        ? String(active!.reviewComments.length)
+        : null;
+  // stickTick forces re-render when the user pins/unpins auto-scroll.
+  const showJumpToLatest =
+    !!active && stickTick >= 0 && !isStuckToBottom(active.sessionId);
+
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2.5">
-        <div className="flex items-center gap-2">
+      <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2">
+        <div className="flex items-center gap-2.5">
           <div
             className={`h-2 w-2 rounded-full ${
               running
-                ? "bg-[var(--success)] shadow-[0_0_8px_var(--success)]"
-                : "bg-[var(--text-muted)]"
+                ? "bg-[var(--success)] shadow-[0_0_10px_var(--success)]"
+                : "bg-[var(--text-faint)]"
             }`}
           />
-          <span className="text-sm font-semibold tracking-wide">Grok Desk</span>
-          <span className="text-xs text-[var(--text-muted)]">v0.7 · Reliability</span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-[13px] font-semibold tracking-wide">
+              Grok Desk
+            </span>
+            <span className="text-[10px] text-[var(--text-faint)]">
+              v0.8 · mission control
+            </span>
+          </div>
         </div>
-        <div className="ml-auto flex items-center gap-3 text-xs text-[var(--text-muted)]">
-          <span className="mono">{headerStatus}</span>
+        <div className="ml-auto flex items-center gap-2 text-xs text-[var(--text-muted)]">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              active?.busy
+                ? "bg-[var(--warning)]/15 text-[var(--warning)]"
+                : active?.permissions.length
+                  ? "bg-[var(--danger)]/15 text-[var(--danger)]"
+                  : running
+                    ? "bg-[var(--success)]/12 text-[var(--success)]"
+                    : "bg-[var(--bg-panel)] text-[var(--text-muted)]"
+            }`}
+          >
+            {headerStatus}
+          </span>
           {info?.subscriptionTier && (
-            <span className="rounded bg-[var(--accent)]/15 px-2 py-0.5 text-[var(--accent)]">
+            <span className="hidden rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] text-[var(--accent)] sm:inline">
               {info.subscriptionTier}
             </span>
           )}
           {info?.authEmail && (
-            <span className="hidden md:inline">{info.authEmail}</span>
-          )}
-          {grok?.version && (
-            <span className="mono rounded bg-[var(--bg-panel)] px-2 py-0.5">
-              {grok.version}
+            <span className="hidden max-w-[12rem] truncate lg:inline">
+              {info.authEmail}
             </span>
           )}
+          {grok?.version && (
+            <span className="mono hidden rounded-md bg-[var(--bg-panel)] px-2 py-0.5 text-[10px] xl:inline">
+              {grok.version.replace(/^grok\s+/i, "")}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowShortcuts(true)}
+            className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+            title="Keyboard shortcuts (Ctrl+/)"
+          >
+            <span className="kbd">?</span>
+          </button>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         {/* Sidebar */}
-        <aside className="flex w-80 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-panel)]">
-          <div className="space-y-3 border-b border-[var(--border)] p-3">
-            <div className="flex gap-2">
+        <aside className="flex w-[17.5rem] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-panel)]">
+          <div className="space-y-2.5 border-b border-[var(--border)] p-3">
+            <div className="flex gap-1.5">
               {!running ? (
                 <button
                   onClick={connect}
                   disabled={connecting || !grok?.available}
-                  className="flex-1 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-black hover:bg-[var(--accent-dim)] disabled:opacity-40"
+                  className="flex-1 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[var(--accent-fg)] hover:brightness-110 disabled:opacity-40"
                 >
                   {connecting ? "Connecting…" : "Connect"}
                 </button>
@@ -1275,15 +1720,19 @@ export default function App() {
                   setShowRecents((v) => !v);
                   void refreshDisk();
                 }}
-                className="rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-[var(--accent)]"
+                className={`rounded-md border px-3 py-2 text-sm ${
+                  showRecents
+                    ? "border-[var(--accent)]/50 bg-[var(--accent)]/10 text-[var(--accent)]"
+                    : "border-[var(--border)] hover:border-[var(--accent)]"
+                }`}
                 title="Recent sessions on disk"
               >
                 Recents
               </button>
             </div>
 
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-              Project folder
+            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
+              Project
             </div>
             <div className="flex gap-1">
               <input
@@ -1306,7 +1755,7 @@ export default function App() {
             <button
               onClick={openSession}
               disabled={!cwd}
-              className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-[var(--accent)] disabled:opacity-40"
+              className="w-full rounded-md border border-dashed border-[var(--border-strong)] px-3 py-2 text-sm text-[var(--text)] hover:border-[var(--accent)] hover:bg-[var(--accent)]/5 disabled:opacity-40"
             >
               + New session
             </button>
@@ -1314,25 +1763,30 @@ export default function App() {
 
           {/* Open sessions */}
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-              Open sessions ({sessions.length})
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
+                Sessions
+              </span>
+              <span className="mono text-[10px] text-[var(--text-faint)]">
+                {sessions.length}
+              </span>
             </div>
             {sessions.length === 0 ? (
-              <p className="px-2 text-xs text-[var(--text-muted)]">
-                Connect and open a session on a project folder.
+              <p className="px-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
+                Connect, pick a project folder, then open a session.
               </p>
             ) : (
-              <ul className="space-y-1">
+              <ul className="space-y-0.5">
                 {sessions.map((s) => {
                   const selected = s.sessionId === activeId;
                   return (
                     <li key={s.sessionId}>
                       <button
                         onClick={() => setActiveId(s.sessionId)}
-                        className={`group flex w-full items-start gap-2 rounded-md border px-2.5 py-2 text-left transition ${
+                        className={`group flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition ${
                           selected
-                            ? "border-[var(--accent)]/50 bg-[var(--accent)]/10"
-                            : "border-transparent hover:bg-white/5"
+                            ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
+                            : "hover:bg-[var(--bg-hover)]"
                         }`}
                       >
                         <span
@@ -1341,17 +1795,19 @@ export default function App() {
                               ? "animate-pulse bg-[var(--warning)]"
                               : s.permissions.length
                                 ? "bg-[var(--danger)]"
-                                : "bg-[var(--success)]"
+                                : s.permissionMode === "always-approve"
+                                  ? "bg-[var(--warning)]"
+                                  : "bg-[var(--success)]"
                           }`}
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium">
+                          <div className="truncate text-[13px] font-medium">
                             {s.title}
                           </div>
-                          <div className="mono truncate text-[10px] text-[var(--text-muted)]">
-                            {folderName(s.cwd)} · {shortId(s.sessionId)}
+                          <div className="mono truncate text-[10px] text-[var(--text-faint)]">
+                            {folderName(s.cwd)}
                             {s.plan.length > 0
-                              ? ` · ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`
+                              ? ` · plan ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`
                               : ""}
                           </div>
                         </div>
@@ -1368,7 +1824,7 @@ export default function App() {
                               closeSession(s.sessionId);
                             }
                           }}
-                          className="rounded px-1 text-[var(--text-muted)] opacity-0 hover:bg-white/10 hover:text-[var(--danger)] group-hover:opacity-100"
+                          className="rounded px-1 text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--danger)] group-hover:opacity-100"
                         >
                           ×
                         </span>
@@ -1406,41 +1862,52 @@ export default function App() {
             )}
           </div>
 
-          {/* Tools for active session */}
-          <div className="max-h-48 overflow-auto border-t border-[var(--border)] p-3">
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-              Tool activity
-            </div>
-            {!active || active.tools.length === 0 ? (
-              <p className="text-xs text-[var(--text-muted)]">No tools yet.</p>
-            ) : (
-              <ul className="space-y-1">
-                {[...active.tools].reverse().slice(0, 12).map((t) => (
-                  <li
-                    key={t.id}
-                    className="flex items-center justify-between rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs"
-                  >
-                    <span className="font-medium text-[var(--tool)]">{t.title}</span>
-                    <span
-                      className={`mono text-[10px] ${
-                        t.status === "completed"
-                          ? "text-[var(--success)]"
-                          : t.status === "failed"
-                            ? "text-[var(--danger)]"
-                            : "text-[var(--text-muted)]"
-                      }`}
+          {/* Tools for active session — collapsed by default */}
+          <details className="border-t border-[var(--border)] open:max-h-52">
+            <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)] hover:text-[var(--text-muted)]">
+              Tools
+              {active && active.tools.length > 0
+                ? ` · ${active.tools.length}`
+                : ""}
+            </summary>
+            <div className="max-h-40 overflow-auto px-2 pb-2">
+              {!active || active.tools.length === 0 ? (
+                <p className="px-1 text-[11px] text-[var(--text-muted)]">
+                  Tool calls appear here while the agent works.
+                </p>
+              ) : (
+                <ul className="space-y-0.5">
+                  {[...active.tools].reverse().slice(0, 16).map((t) => (
+                    <li
+                      key={t.id}
+                      className="flex items-center justify-between gap-2 rounded-md px-2 py-1 text-[11px] hover:bg-[var(--bg-hover)]"
                     >
-                      {t.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                      <span className="truncate font-medium text-[var(--tool)]">
+                        {t.title}
+                      </span>
+                      <span
+                        className={`mono shrink-0 text-[10px] ${
+                          t.status === "completed"
+                            ? "text-[var(--success)]"
+                            : t.status === "failed"
+                              ? "text-[var(--danger)]"
+                              : "text-[var(--text-faint)]"
+                        }`}
+                      >
+                        {t.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </details>
 
           {stderrTail.length > 0 && (
             <details className="border-t border-[var(--border)] p-2 text-[10px] text-[var(--text-muted)]">
-              <summary className="cursor-pointer">Agent stderr</summary>
+              <summary className="cursor-pointer text-[var(--text-faint)]">
+                Agent stderr
+              </summary>
               <pre className="mono mt-1 max-h-24 overflow-auto whitespace-pre-wrap">
                 {stderrTail.slice(-10).join("\n")}
               </pre>
@@ -1453,34 +1920,181 @@ export default function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           {active ? (
             <>
-              <div className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)]/60 px-4 py-2 text-xs text-[var(--text-muted)]">
-                <span className="font-medium text-[var(--text)]">{active.title}</span>
-                <span className="mono truncate">{active.cwd}</span>
-                {active.modeId === "plan" && (
-                  <span className="rounded bg-[var(--thought)]/20 px-1.5 py-0.5 text-[10px] text-[var(--thought)]">
-                    plan mode
-                  </span>
-                )}
-                {active.plan.length > 0 && (
-                  <span className="mono text-[10px] text-[var(--text-muted)]">
-                    plan {active.plan.filter((e) => e.status === "completed").length}/
-                    {active.plan.length}
-                  </span>
-                )}
-                {gitFiles.length > 0 && (
-                  <span className="mono text-[10px] text-[var(--tool)]">
-                    {gitFiles.length} changed
-                  </span>
-                )}
-                {(active.reviewComments?.length ?? 0) > 0 && (
-                  <span className="rounded bg-[var(--warning)]/20 px-1.5 py-0.5 text-[10px] text-[var(--warning)]">
-                    {active.reviewComments.length} review note
-                    {active.reviewComments.length === 1 ? "" : "s"} → next send
-                  </span>
-                )}
-                <span className="mono ml-auto">
-                  {active.modelId || info?.modelId || "—"}
-                </span>
+              {/* Session chrome — identity + controls, not competing with Plan/Diff */}
+              <div className="border-b border-[var(--border)] bg-[var(--bg-elevated)]/80">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-semibold text-[var(--text)]">
+                      {active.title}
+                    </div>
+                    <div
+                      className="mono truncate text-[10px] text-[var(--text-faint)]"
+                      title={active.cwd}
+                    >
+                      {active.cwd}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {active.modeId === "plan" && (
+                      <span className="rounded-full bg-[var(--thought)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--thought)]">
+                        plan mode
+                      </span>
+                    )}
+                    {(active.reviewComments?.length ?? 0) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setInspectorTab("diff")}
+                        className="rounded-full bg-[var(--warning)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--warning)] hover:bg-[var(--warning)]/25"
+                      >
+                        {active.reviewComments.length} review note
+                        {active.reviewComments.length === 1 ? "" : "s"}
+                      </button>
+                    )}
+                    {gitFiles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setInspectorTab("diff")}
+                        className="rounded-full bg-[var(--tool)]/12 px-2 py-0.5 text-[10px] font-medium text-[var(--tool)] hover:bg-[var(--tool)]/20"
+                      >
+                        {gitFiles.length} changed
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)]/70 px-4 py-1.5">
+                  <label className="flex items-center gap-1.5" title="Session model">
+                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                      Model
+                    </span>
+                    <select
+                      value={active.modelId || info?.modelId || ""}
+                      disabled={active.busy || sessionModels.length === 0}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (!next) return;
+                        void applyModelSettings(
+                          active.sessionId,
+                          next,
+                          active.reasoningEffort,
+                        );
+                      }}
+                      className="ctrl-select"
+                    >
+                      {sessionModels.length === 0 ? (
+                        <option value="">
+                          {active.modelId || info?.modelId || "—"}
+                        </option>
+                      ) : (
+                        sessionModels.map((m) => (
+                          <option key={m.modelId} value={m.modelId}>
+                            {m.name || m.modelId}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+
+                  {supportsEffort && (
+                    <label
+                      className="flex items-center gap-1.5"
+                      title="Reasoning effort"
+                    >
+                      <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                        Effort
+                      </span>
+                      <select
+                        value={
+                          active.reasoningEffort ||
+                          info?.reasoningEffort ||
+                          "high"
+                        }
+                        disabled={active.busy || !active.modelId}
+                        onChange={(e) => {
+                          const modelId = active.modelId || info?.modelId;
+                          if (!modelId) return;
+                          void applyModelSettings(
+                            active.sessionId,
+                            modelId,
+                            e.target.value,
+                          );
+                        }}
+                        className="ctrl-select"
+                      >
+                        {effortOptions.map((e) => (
+                          <option key={e.id || e.value} value={e.value || e.id}>
+                            {e.label || e.value}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+
+                  <label
+                    className="flex items-center gap-1.5"
+                    title="Tool permission policy for this tab"
+                  >
+                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                      Perms
+                    </span>
+                    <select
+                      value={active.permissionMode || "default"}
+                      disabled={active.busy}
+                      onChange={(e) =>
+                        setPermissionMode(
+                          active.sessionId,
+                          e.target.value as PermissionMode,
+                        )
+                      }
+                      className={`ctrl-select ${
+                        active.permissionMode === "always-approve"
+                          ? "border-[var(--warning)]/50 text-[var(--warning)]"
+                          : ""
+                      }`}
+                    >
+                      <option value="default">Ask</option>
+                      <option value="always-approve">Always approve</option>
+                    </select>
+                  </label>
+
+                  <div className="ml-auto flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setInspectorTab((t) => (t === "plan" ? null : "plan"))
+                      }
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium ${
+                        inspectorTab === "plan"
+                          ? "bg-[var(--accent)]/15 text-[var(--accent)]"
+                          : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+                      }`}
+                      title="Plan (Alt+P)"
+                    >
+                      Plan
+                      {planBadge ? (
+                        <span className="mono ml-1 opacity-70">{planBadge}</span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setInspectorTab((t) => (t === "diff" ? null : "diff"))
+                      }
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium ${
+                        inspectorTab === "diff"
+                          ? "bg-[var(--tool)]/15 text-[var(--tool)]"
+                          : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+                      }`}
+                      title="Diff (Alt+D)"
+                    >
+                      Diff
+                      {diffBadge ? (
+                        <span className="mono ml-1 opacity-70">{diffBadge}</span>
+                      ) : null}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {isStalled && (
@@ -1537,7 +2151,7 @@ export default function App() {
                                 o.optionId,
                               )
                             }
-                            className="rounded bg-[var(--accent)] px-3 py-1 text-xs font-medium text-black"
+                            className="rounded-md bg-[var(--accent)] px-3 py-1 text-xs font-medium text-[var(--accent-fg)]"
                           >
                             {o.name || o.optionId}
                           </button>
@@ -1556,15 +2170,29 @@ export default function App() {
                 </div>
               )}
 
-              <div
-                ref={scrollRef}
-                className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
-              >
-                <div className="mx-auto max-w-3xl space-y-3">
-                  {active.items.map((item) => (
-                    <MessageBubble key={item.id} item={item} />
-                  ))}
+              <div className="relative min-h-0 flex-1">
+                <div
+                  ref={scrollRef}
+                  onScroll={onTranscriptScroll}
+                  className="h-full overflow-y-auto px-4 py-4"
+                >
+                  <div className="mx-auto max-w-3xl space-y-3">
+                    {active.items.map((item) => (
+                      <MessageBubble key={item.id} item={item} />
+                    ))}
+                  </div>
                 </div>
+                {/* Only show when user scrolled up during a live stream */}
+                {showJumpToLatest && (
+                  <button
+                    type="button"
+                    onClick={() => scrollToLatest(active.sessionId)}
+                    className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1.5 text-[11px] font-medium text-[var(--text)] shadow-[var(--shadow-panel)] hover:border-[var(--accent)]"
+                  >
+                    Jump to latest
+                    {active.busy ? " · streaming" : ""}
+                  </button>
+                )}
               </div>
 
               {error && (
@@ -1575,12 +2203,71 @@ export default function App() {
 
               <div className="border-t border-[var(--border)] bg-[var(--bg-elevated)] p-3">
                 <div className="mx-auto max-w-3xl">
+                  {(active.promptQueue?.length ?? 0) > 0 && (
+                    <div className="mb-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-semibold text-[var(--text-muted)]">
+                          Queue · {active.promptQueue.length}
+                          {active.busy ? " · runs after current turn" : ""}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            patchSession(active.sessionId, (s) => ({
+                              ...s,
+                              promptQueue: [],
+                              items: [
+                                ...s.items,
+                                {
+                                  id: uid(),
+                                  role: "system",
+                                  text: "Prompt queue cleared.",
+                                  meta: "queue",
+                                },
+                              ],
+                            }))
+                          }
+                          className="text-[10px] text-[var(--text-faint)] hover:text-[var(--danger)]"
+                        >
+                          Clear all
+                        </button>
+                      </div>
+                      <ul className="space-y-1">
+                        {active.promptQueue.map((q, i) => (
+                          <li
+                            key={q.id}
+                            className="flex items-start gap-2 rounded-md bg-[var(--bg-panel)] px-2 py-1 text-[11px]"
+                          >
+                            <span className="mono shrink-0 text-[var(--text-faint)]">
+                              {i + 1}.
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-[var(--text-muted)]">
+                              {q.displayText}
+                              {q.images.length > 0
+                                ? ` · ${q.images.length} img`
+                                : ""}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                removeQueuedPrompt(active.sessionId, q.id)
+                              }
+                              className="shrink-0 text-[var(--text-faint)] hover:text-[var(--danger)]"
+                              title="Remove from queue"
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {pendingImages.length > 0 && (
                     <div className="mb-2 flex flex-wrap gap-2">
                       {pendingImages.map((img) => (
                         <div
                           key={img.id}
-                          className="relative h-16 w-16 overflow-hidden rounded-md border border-[var(--border)]"
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-[var(--border)]"
                         >
                           <img
                             src={img.previewUrl}
@@ -1609,110 +2296,220 @@ export default function App() {
                       onChange={(e) => setPrompt(e.target.value)}
                       onPaste={onComposerPaste}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
+                        if (
+                          (e.key === "Enter" && !e.shiftKey) ||
+                          (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                        ) {
                           e.preventDefault();
                           void send();
                         }
                       }}
-                      disabled={active.busy}
                       rows={2}
-                      placeholder="Message Grok… (Enter send · paste screenshots)"
-                      className="min-h-[52px] flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                      placeholder={
+                        active.busy
+                          ? "Type the next prompt… Enter queues it for when this turn finishes"
+                          : "Message Grok…  Enter to send · Shift+Enter newline · paste images"
+                      }
+                      className="min-h-[56px] flex-1 resize-none rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none focus:border-[var(--accent)]"
                     />
                     <div className="flex flex-col gap-1">
                       <button
-                        onClick={send}
-                        disabled={
-                          active.busy ||
-                          (!prompt.trim() && pendingImages.length === 0)
+                        onClick={() => void send()}
+                        disabled={!prompt.trim() && pendingImages.length === 0}
+                        className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-[var(--accent-fg)] hover:brightness-110 disabled:opacity-40"
+                        title={
+                          active.busy
+                            ? "Add to queue — runs after the current turn"
+                            : "Send now"
                         }
-                        className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-40"
                       >
-                        {active.busy ? "…" : "Send"}
+                        {active.busy ? "Queue" : "Send"}
                       </button>
                       {active.busy && (
                         <button
                           onClick={cancel}
-                          className="rounded-lg border border-[var(--border)] px-4 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+                          className="rounded-xl border border-[var(--border)] px-4 py-1.5 text-xs text-[var(--text-muted)] hover:border-[var(--danger)] hover:text-[var(--danger)]"
                         >
                           Stop
                         </button>
                       )}
                     </div>
                   </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-faint)]">
+                    <span>
+                      <span className="kbd">Alt</span>+
+                      <span className="kbd">P</span> plan
+                    </span>
+                    <span>
+                      <span className="kbd">Alt</span>+
+                      <span className="kbd">D</span> diff
+                    </span>
+                    <span>
+                      <span className="kbd">Ctrl</span>+
+                      <span className="kbd">/</span> shortcuts
+                    </span>
+                    {active.busy && (
+                      <span className="text-[var(--warning)]">
+                        Composer stays open — queue the next job anytime
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </>
           ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-[var(--text-muted)]">
-              <p className="text-lg font-medium text-[var(--text)]">
-                Mission control for Grok Build
-              </p>
-              <p className="max-w-md text-sm leading-relaxed">
-                Connect with SuperGrok Heavy, open multiple sessions on any
-                project, resume from disk, and keep tools streaming in one place.
-              </p>
+            <div className="fade-up flex flex-1 flex-col items-center justify-center gap-4 p-10 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--bg-panel)] text-xl text-[var(--accent)]">
+                ⌂
+              </div>
+              <div className="space-y-2">
+                <p className="text-xl font-semibold tracking-tight text-[var(--text)]">
+                  Mission control for Grok Build
+                </p>
+                <p className="mx-auto max-w-md text-[13px] leading-relaxed text-[var(--text-muted)]">
+                  Chat-first layout. Plan and Diff stay in the right rail until
+                  you need them — open with the toolbar or{" "}
+                  <span className="kbd">Alt</span>+<span className="kbd">P</span>{" "}
+                  / <span className="kbd">D</span>.
+                </p>
+              </div>
+              <ol className="mx-auto max-w-sm space-y-1.5 text-left text-[12px] text-[var(--text-muted)]">
+                <li className="flex gap-2">
+                  <span className="mono text-[var(--accent)]">1</span>
+                  Connect to the local <span className="mono">grok</span> agent
+                </li>
+                <li className="flex gap-2">
+                  <span className="mono text-[var(--accent)]">2</span>
+                  Choose a project folder
+                </li>
+                <li className="flex gap-2">
+                  <span className="mono text-[var(--accent)]">3</span>
+                  Open a session and steer with model, effort, and perms
+                </li>
+              </ol>
               {!running && (
                 <button
                   onClick={connect}
                   disabled={connecting || !grok?.available}
-                  className="mt-2 rounded-md bg-[var(--accent)] px-5 py-2 text-sm font-medium text-black disabled:opacity-40"
+                  className="mt-1 rounded-xl bg-[var(--accent)] px-6 py-2.5 text-sm font-medium text-[var(--accent-fg)] hover:brightness-110 disabled:opacity-40"
                 >
                   {connecting ? "Connecting…" : "Connect to Grok"}
                 </button>
+              )}
+              {running && (
+                <p className="text-[12px] text-[var(--text-faint)]">
+                  Pick a folder and click <strong>+ New session</strong>
+                </p>
               )}
             </div>
           )}
         </main>
 
         {active && (
-          <>
-            <PlanPane
-              plan={active.plan}
-              modeId={active.modeId}
-              planDoc={active.planDoc}
-              planApproval={active.planApproval}
-              busy={active.busy}
-              open={planOpen}
-              onToggle={() => setPlanOpen((v) => !v)}
-              onEnterPlanMode={enterPlanMode}
-              onApprove={approvePlan}
-              onRevise={revisePlan}
-              onRefreshDoc={() => void refreshPlanDoc()}
-              onAbandonPlan={abandonPlan}
-            />
-            <DiffPane
-              open={diffOpen}
-              onToggle={() => setDiffOpen((v) => !v)}
-              isRepo={gitIsRepo}
-              files={gitFiles}
-              selectedPath={gitSelected}
-              patch={gitPatch}
-              error={gitError}
-              loading={gitLoading}
-              comments={active.reviewComments ?? []}
-              onSelectFile={(p) => void selectGitFile(p)}
-              onRefresh={() => void refreshGit(active.cwd, gitSelected)}
-              onAddComment={(c) => {
-                const comment: ReviewComment = { ...c, id: uid() };
-                patchSession(active.sessionId, (s) => ({
-                  ...s,
-                  reviewComments: [...(s.reviewComments ?? []), comment],
-                }));
-              }}
-              onRemoveComment={(id) => {
-                patchSession(active.sessionId, (s) => ({
-                  ...s,
-                  reviewComments: (s.reviewComments ?? []).filter(
-                    (x) => x.id !== id,
-                  ),
-                }));
-              }}
-            />
-          </>
+          <InspectorRail
+            tab={inspectorTab}
+            onTab={setInspectorTab}
+            planBadge={planBadge}
+            planAlert={!!active.planApproval}
+            diffBadge={diffBadge}
+          >
+            {inspectorTab === "plan" && (
+              <PlanPane
+                embedded
+                plan={active.plan}
+                modeId={active.modeId}
+                planDoc={active.planDoc}
+                planApproval={active.planApproval}
+                busy={active.busy}
+                onEnterPlanMode={enterPlanMode}
+                onApprove={approvePlan}
+                onRevise={revisePlan}
+                onRefreshDoc={() => void refreshPlanDoc()}
+                onAbandonPlan={abandonPlan}
+              />
+            )}
+            {inspectorTab === "diff" && (
+              <DiffPane
+                embedded
+                isRepo={gitIsRepo}
+                files={gitFiles}
+                selectedPath={gitSelected}
+                patch={gitPatch}
+                error={gitError}
+                loading={gitLoading}
+                comments={active.reviewComments ?? []}
+                onSelectFile={(p) => void selectGitFile(p)}
+                onRefresh={() => void refreshGit(active.cwd, gitSelected)}
+                onAddComment={(c) => {
+                  const comment: ReviewComment = { ...c, id: uid() };
+                  patchSession(active.sessionId, (s) => ({
+                    ...s,
+                    reviewComments: [...(s.reviewComments ?? []), comment],
+                  }));
+                }}
+                onRemoveComment={(id) => {
+                  patchSession(active.sessionId, (s) => ({
+                    ...s,
+                    reviewComments: (s.reviewComments ?? []).filter(
+                      (x) => x.id !== id,
+                    ),
+                  }));
+                }}
+              />
+            )}
+          </InspectorRail>
         )}
         </div>
       </div>
+
+      {showShortcuts && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-6 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => setShowShortcuts(false)}
+        >
+          <div
+            role="dialog"
+            aria-label="Keyboard shortcuts"
+            className="fade-up w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] p-5 shadow-[var(--shadow-panel)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-sm font-semibold tracking-wide">
+                Keyboard shortcuts
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowShortcuts(false)}
+                className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+              >
+                Close
+              </button>
+            </div>
+            <ul className="space-y-2 text-[13px]">
+              {[
+                ["Alt + P", "Toggle Plan panel"],
+                ["Alt + D", "Toggle Diff panel"],
+                ["Esc", "Close panel / shortcuts"],
+                ["Enter", "Send (or queue if busy)"],
+                ["Shift + Enter", "New line in composer"],
+                ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
+                ["Ctrl + /", "This help"],
+              ].map(([keys, desc]) => (
+                <li
+                  key={keys}
+                  className="flex items-center justify-between gap-4 border-b border-[var(--border)]/60 py-2 last:border-0"
+                >
+                  <span className="text-[var(--text-muted)]">{desc}</span>
+                  <span className="mono shrink-0 text-[11px] text-[var(--accent)]">
+                    {keys}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1762,7 +2559,7 @@ function MessageBubble({ item }: { item: ChatItem }) {
   if (item.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[var(--accent-dim)]/30 px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[color-mix(in_srgb,var(--accent)_22%,transparent)] px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-[var(--text)]">
           {item.text}
         </div>
       </div>
@@ -1770,14 +2567,14 @@ function MessageBubble({ item }: { item: ChatItem }) {
   }
   if (item.role === "thought") {
     return (
-      <details className="rounded-lg border border-[var(--thought)]/20 bg-[var(--thought)]/5 px-3 py-2 text-xs leading-relaxed text-[var(--thought)]">
+      <details className="rounded-xl border border-[var(--thought)]/18 bg-[var(--thought)]/5 px-3 py-2 text-xs leading-relaxed text-[var(--thought)]">
         <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider opacity-70">
           Thinking
           {item.text.length > 200
             ? ` · ${Math.round(item.text.length / 1000)}k chars`
             : ""}
         </summary>
-        <div className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap">
+        <div className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap opacity-90">
           {item.text}
         </div>
       </details>
@@ -1785,9 +2582,11 @@ function MessageBubble({ item }: { item: ChatItem }) {
   }
   if (item.role === "tool") {
     return (
-      <div className="mono flex items-center gap-2 text-xs text-[var(--tool)]">
-        <span className="rounded bg-[var(--tool)]/10 px-1.5 py-0.5">tool</span>
-        <span>{item.text}</span>
+      <div className="mono flex items-center gap-2 text-[11px] text-[var(--tool)]">
+        <span className="rounded-md bg-[var(--tool)]/10 px-1.5 py-0.5 text-[10px]">
+          tool
+        </span>
+        <span className="truncate">{item.text}</span>
         {item.meta && (
           <span
             className={
@@ -1795,7 +2594,7 @@ function MessageBubble({ item }: { item: ChatItem }) {
                 ? "text-[var(--success)]"
                 : item.meta === "failed"
                   ? "text-[var(--danger)]"
-                  : "text-[var(--text-muted)]"
+                  : "text-[var(--text-faint)]"
             }
           >
             · {item.meta}
@@ -1806,13 +2605,13 @@ function MessageBubble({ item }: { item: ChatItem }) {
   }
   if (item.role === "system") {
     return (
-      <div className="text-center text-[11px] text-[var(--text-muted)]">
+      <div className="text-center text-[11px] text-[var(--text-faint)]">
         {item.text}
       </div>
     );
   }
   return (
-    <div className="max-w-[90%] rounded-2xl rounded-bl-md border border-[var(--border)] bg-[var(--bg-panel)] px-3.5 py-2">
+    <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-[var(--border)] bg-[var(--bg-panel)] px-3.5 py-2.5 shadow-[0_1px_0_rgba(0,0,0,0.2)]">
       <RichText text={item.text} />
     </div>
   );
