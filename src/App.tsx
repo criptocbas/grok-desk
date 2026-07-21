@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AgentInfo,
+  AvailableCommand,
   ChatItem,
   DeskSession,
   DiskSession,
@@ -32,6 +33,11 @@ import {
   InspectorRail,
   type InspectorTab,
 } from "./components/InspectorRail";
+import {
+  SlashPalette,
+  filterCommands,
+  getSlashMatch,
+} from "./components/SlashPalette";
 import { RichText } from "./components/RichText";
 
 const DEFAULT_EFFORTS = [
@@ -167,6 +173,11 @@ export default function App() {
   const [stderrTail, setStderrTail] = useState<string[]>([]);
   /** Ticks while busy so stall banner can recompute. */
   const [clock, setClock] = useState(() => Date.now());
+  /** Composer caret — drives slash palette matching. */
+  const [composerCursor, setComposerCursor] = useState(0);
+  const [slashIndex, setSlashIndex] = useState(0);
+  /** Esc hides palette until the /token changes. */
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   /** Avoid stale closures when answering plan approval reverse-requests. */
@@ -563,6 +574,18 @@ export default function App() {
           (update.current_mode_id as string) ||
           null;
         patchSession(sessionId, (s) => ({ ...s, modeId }));
+      } else if (kind === "available_commands_update") {
+        const raw =
+          (update.availableCommands as unknown[]) ||
+          (update.available_commands as unknown[]) ||
+          [];
+        const cmds = parseAvailableCommands(raw);
+        if (cmds.length) {
+          patchSession(sessionId, (s) => ({
+            ...s,
+            availableCommands: cmds,
+          }));
+        }
       } else if (kind === "tool_call") {
         const id =
           (update.toolCallId as string) ||
@@ -769,6 +792,7 @@ export default function App() {
         availableModels: s.availableModels ?? info?.availableModels ?? [],
         permissionMode: "default",
         promptQueue: [],
+        availableCommands: [],
         items: [
           {
             id: uid(),
@@ -829,6 +853,7 @@ export default function App() {
           availableModels: info?.availableModels ?? [],
           permissionMode: "default",
           promptQueue: [],
+          availableCommands: [],
           items: [
             {
               id: uid(),
@@ -1634,6 +1659,77 @@ export default function App() {
   const showJumpToLatest =
     !!active && stickTick >= 0 && !isStuckToBottom(active.sessionId);
 
+  const slashMatch = useMemo(
+    () => getSlashMatch(prompt, composerCursor),
+    [prompt, composerCursor],
+  );
+  const slashCommands = active?.availableCommands ?? [];
+  const slashFiltered = useMemo(
+    () =>
+      slashMatch ? filterCommands(slashCommands, slashMatch.query) : [],
+    [slashMatch, slashCommands],
+  );
+  const slashOpen = Boolean(active && slashMatch && !slashDismissed);
+
+  // Re-show palette when the /token changes after Esc
+  useEffect(() => {
+    setSlashDismissed(false);
+    setSlashIndex(0);
+  }, [slashMatch?.start, slashMatch?.query]);
+
+  // Keep selection in range when filter changes
+  useEffect(() => {
+    if (slashIndex >= slashFiltered.length) {
+      setSlashIndex(Math.max(0, slashFiltered.length - 1));
+    }
+  }, [slashFiltered.length, slashIndex]);
+
+  const applySlashCommand = useCallback(
+    (cmd: AvailableCommand) => {
+      const match = getSlashMatch(
+        prompt,
+        composerRef.current?.selectionStart ?? composerCursor,
+      );
+      const insert = `/${cmd.name} `;
+      if (!match) {
+        const next =
+          prompt + (prompt && !/\s$/.test(prompt) ? " " : "") + insert;
+        setPrompt(next);
+        setSlashDismissed(true);
+        setSlashIndex(0);
+        requestAnimationFrame(() => {
+          const el = composerRef.current;
+          if (!el) return;
+          const pos = next.length;
+          el.focus();
+          el.setSelectionRange(pos, pos);
+          setComposerCursor(pos);
+        });
+        return;
+      }
+      const next =
+        prompt.slice(0, match.start) + insert + prompt.slice(match.end);
+      setPrompt(next);
+      setSlashDismissed(true);
+      setSlashIndex(0);
+      requestAnimationFrame(() => {
+        const el = composerRef.current;
+        if (!el) return;
+        const pos = match.start + insert.length;
+        el.focus();
+        el.setSelectionRange(pos, pos);
+        setComposerCursor(pos);
+      });
+    },
+    [prompt, composerCursor],
+  );
+
+  const syncComposerCursor = () => {
+    const el = composerRef.current;
+    if (!el) return;
+    setComposerCursor(el.selectionStart ?? 0);
+  };
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2">
@@ -2289,17 +2385,101 @@ export default function App() {
                       ))}
                     </div>
                   )}
+
+                  <SlashPalette
+                    open={slashOpen}
+                    commands={slashCommands}
+                    match={slashMatch}
+                    selectedIndex={slashIndex}
+                    onSelectedIndex={setSlashIndex}
+                    onPick={applySlashCommand}
+                    onClose={() => {
+                      setSlashDismissed(true);
+                      setSlashIndex(0);
+                    }}
+                  />
+
                   <div className="flex gap-2">
                     <textarea
                       ref={composerRef}
                       value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
+                      onChange={(e) => {
+                        setPrompt(e.target.value);
+                        setComposerCursor(e.target.selectionStart ?? 0);
+                      }}
+                      onClick={syncComposerCursor}
+                      onKeyUp={syncComposerCursor}
+                      onSelect={syncComposerCursor}
                       onPaste={onComposerPaste}
                       onKeyDown={(e) => {
+                        const match = getSlashMatch(
+                          prompt,
+                          e.currentTarget.selectionStart ?? 0,
+                        );
+                        const filtered = match
+                          ? filterCommands(
+                              active.availableCommands ?? [],
+                              match.query,
+                            )
+                          : [];
+                        const paletteActive =
+                          Boolean(match) && !slashDismissed;
+
+                        if (paletteActive && e.key === "Escape") {
+                          e.preventDefault();
+                          setSlashDismissed(true);
+                          setSlashIndex(0);
+                          return;
+                        }
+
                         if (
-                          (e.key === "Enter" && !e.shiftKey) ||
-                          (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                          paletteActive &&
+                          filtered.length > 0 &&
+                          (e.key === "ArrowDown" || e.key === "ArrowUp")
                         ) {
+                          e.preventDefault();
+                          setSlashIndex((i) => {
+                            if (e.key === "ArrowDown")
+                              return (i + 1) % filtered.length;
+                            return (i - 1 + filtered.length) % filtered.length;
+                          });
+                          return;
+                        }
+
+                        if (
+                          paletteActive &&
+                          filtered.length > 0 &&
+                          e.key === "Tab"
+                        ) {
+                          e.preventDefault();
+                          const pick = filtered[slashIndex] ?? filtered[0];
+                          if (pick) applySlashCommand(pick);
+                          return;
+                        }
+
+                        // Enter: complete slash if filtering a partial command;
+                        // otherwise send / queue the message.
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          if (
+                            paletteActive &&
+                            filtered.length > 0 &&
+                            match &&
+                            // Exact unique match or user navigating list → complete
+                            (filtered.length === 1 ||
+                              match.query.length > 0 ||
+                              slashIndex > 0)
+                          ) {
+                            e.preventDefault();
+                            const pick = filtered[slashIndex] ?? filtered[0];
+                            if (pick) applySlashCommand(pick);
+                            return;
+                          }
+                          e.preventDefault();
+                          void send();
+                          return;
+                        }
+
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                           e.preventDefault();
                           void send();
                         }
@@ -2307,12 +2487,42 @@ export default function App() {
                       rows={2}
                       placeholder={
                         active.busy
-                          ? "Type the next prompt… Enter queues it for when this turn finishes"
-                          : "Message Grok…  Enter to send · Shift+Enter newline · paste images"
+                          ? "Type next prompt or /command… Enter queues when busy"
+                          : "Message Grok…  / for commands · Enter send · paste images"
                       }
                       className="min-h-[56px] flex-1 resize-none rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none focus:border-[var(--accent)]"
                     />
                     <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSlashDismissed(false);
+                          const el = composerRef.current;
+                          if (!el) return;
+                          if (!getSlashMatch(prompt, el.selectionStart ?? 0)) {
+                            const pos = el.selectionStart ?? prompt.length;
+                            const next =
+                              prompt.slice(0, pos) +
+                              (pos > 0 && !/\s$/.test(prompt.slice(0, pos))
+                                ? " /"
+                                : "/") +
+                              prompt.slice(pos);
+                            setPrompt(next);
+                            requestAnimationFrame(() => {
+                              const p = pos + (next.length - prompt.length);
+                              el.focus();
+                              el.setSelectionRange(p, p);
+                              setComposerCursor(p);
+                            });
+                          } else {
+                            el.focus();
+                          }
+                        }}
+                        className="rounded-xl border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                        title="Slash commands & skills"
+                      >
+                        /
+                      </button>
                       <button
                         onClick={() => void send()}
                         disabled={!prompt.trim() && pendingImages.length === 0}
@@ -2336,6 +2546,12 @@ export default function App() {
                     </div>
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-faint)]">
+                    <span>
+                      <span className="kbd">/</span> commands
+                      {slashCommands.length > 0
+                        ? ` · ${slashCommands.length}`
+                        : ""}
+                    </span>
                     <span>
                       <span className="kbd">Alt</span>+
                       <span className="kbd">P</span> plan
@@ -2490,8 +2706,10 @@ export default function App() {
               {[
                 ["Alt + P", "Toggle Plan panel"],
                 ["Alt + D", "Toggle Diff panel"],
-                ["Esc", "Close panel / shortcuts"],
-                ["Enter", "Send (or queue if busy)"],
+                ["Esc", "Close panel / slash palette / help"],
+                ["/", "Slash commands & skills palette"],
+                ["↑ ↓ Tab", "Navigate / complete slash command"],
+                ["Enter", "Send, queue if busy, or complete slash"],
                 ["Shift + Enter", "New line in composer"],
                 ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
                 ["Ctrl + /", "This help"],
@@ -2512,6 +2730,36 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function parseAvailableCommands(raw: unknown[]): AvailableCommand[] {
+  const out: AvailableCommand[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const name =
+      (typeof o.name === "string" && o.name) ||
+      (typeof o.command === "string" && o.command) ||
+      "";
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const description =
+      (typeof o.description === "string" && o.description) ||
+      (typeof o.desc === "string" && o.desc) ||
+      null;
+    let inputHint: string | null = null;
+    const input = o.input;
+    if (input && typeof input === "object") {
+      const hint = (input as Record<string, unknown>).hint;
+      if (typeof hint === "string") inputHint = hint;
+    } else if (typeof o.hint === "string") {
+      inputHint = o.hint;
+    }
+    out.push({ name, description, inputHint });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 function parsePlanEntries(raw: unknown): PlanEntry[] | null {

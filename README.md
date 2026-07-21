@@ -15,6 +15,7 @@ Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://ag
 - **Model + effort pickers** — per-session via ACP `session/set_model`
 - **Permission modes** — Ask vs Always-approve per tab (auto-allows tool prompts)
 - **OS notifications** when a background tab finishes a turn or needs permission
+- **Slash / skill palette** — type `/` to browse agent commands and skills
 - **Plan pane** — live checklist; Enter plan mode · Approve · Revise (real `exit_plan_mode` handshake)
 - **Diff pane** — git status/diff; auto-refresh after file-mutating tools; click `+` lines for review notes
 - Review notes inject into the next prompt automatically

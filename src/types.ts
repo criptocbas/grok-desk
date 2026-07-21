@@ -107,6 +107,14 @@ export type QueuedPrompt = {
   }[];
 };
 
+/** Slash command or skill advertised via ACP available_commands_update. */
+export type AvailableCommand = {
+  name: string;
+  description?: string | null;
+  /** Optional argument hint from ACP `input.hint`. */
+  inputHint?: string | null;
+};
+
 /** One open tab in the mission-control sidebar. */
 export type DeskSession = {
   sessionId: string;
@@ -120,6 +128,8 @@ export type DeskSession = {
   permissionMode?: PermissionMode;
   /** Prompts to run when the current turn finishes. */
   promptQueue: QueuedPrompt[];
+  /** Slash commands / skills from ACP (per session). */
+  availableCommands: AvailableCommand[];
   items: ChatItem[];
   tools: ToolCallItem[];
   permissions: PermissionRequest[];

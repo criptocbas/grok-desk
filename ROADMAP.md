@@ -50,7 +50,7 @@ Priority order is flexible; pick with the user:
 - [x] OS notifications when a background session finishes (and when a background tab needs permission)
 - [ ] Embedded terminal (PTY in project cwd)
 - [ ] File tree + open in external editor
-- [ ] Slash command / skill palette (Tier 2)
+- [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
 - [ ] Richer tool / subagent / background-task presentation (Tier 2)
 
 ## Phase 4 — Ship loop
