@@ -113,6 +113,39 @@ export function LeftNavigator({
     return map;
   }, [sessions, groups, groupMembership]);
 
+  /** Pinned sessions bucketed by group (group order, then ungrouped). */
+  const pinSections = useMemo(() => {
+    const buckets = new Map<string | null, SessionPin[]>();
+    for (const g of groups) buckets.set(g.id, []);
+    buckets.set(null, []);
+    for (const p of pins) {
+      const gid = groupMembership[p.sessionId];
+      const key = gid && buckets.has(gid) ? gid : null;
+      buckets.get(key)!.push(p);
+    }
+    const sections: {
+      groupId: string | null;
+      label: string | null;
+      items: SessionPin[];
+    }[] = [];
+    for (const g of groups) {
+      const items = buckets.get(g.id) ?? [];
+      if (items.length > 0) {
+        sections.push({ groupId: g.id, label: g.name, items });
+      }
+    }
+    const ungrouped = buckets.get(null) ?? [];
+    if (ungrouped.length > 0) {
+      sections.push({
+        groupId: null,
+        // Only label “Ungrouped” when some pins are also in named groups
+        label: sections.length > 0 ? "Ungrouped" : null,
+        items: ungrouped,
+      });
+    }
+    return sections;
+  }, [pins, groups, groupMembership]);
+
   const onPinDrop = (targetId: string) => {
     if (!onReorderPins || !dragPinId || dragPinId === targetId) {
       setDragPinId(null);
@@ -305,116 +338,125 @@ export function LeftNavigator({
           {pins.length === 0 ? (
             <p className="px-2 text-[11px] leading-relaxed text-[var(--text-faint)]">
               Pin a session to reopen it automatically after restart. Use 📌 on
-              a tab or in Recents.
+              a tab or in Recents. Assign a group under Open to organize pins.
             </p>
           ) : (
-            <ul className="space-y-0.5">
-              {pins.map((p) => {
-                const open = sessions.some(
-                  (s) => s.sessionId === p.sessionId,
-                );
-                const selected = p.sessionId === activeId;
-                const pinGroupId = groupMembership[p.sessionId];
-                const pinGroup = pinGroupId
-                  ? groups.find((g) => g.id === pinGroupId)
-                  : undefined;
-                return (
-                  <li
-                    key={`${p.sessionId}:${p.cwd}`}
-                    draggable={!!onReorderPins}
-                    onDragStart={() => setDragPinId(p.sessionId)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => onPinDrop(p.sessionId)}
-                    onDragEnd={() => setDragPinId(null)}
-                    className={
-                      dragPinId === p.sessionId ? "opacity-50" : undefined
-                    }
-                  >
-                    <div
-                      className={`group flex w-full items-start gap-1 rounded-lg px-1.5 py-1.5 ${
-                        selected
-                          ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-                          : "hover:bg-[var(--bg-hover)]"
-                      } ${p.missing ? "opacity-60" : ""} ${
-                        onReorderPins
-                          ? "cursor-grab active:cursor-grabbing"
-                          : ""
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        disabled={p.missing && !open}
+            <div className="space-y-2">
+              {pinSections.map((section) => (
+                <div key={section.groupId ?? "__ungrouped"}>
+                  {section.label && (
+                    <div className="mb-0.5 flex items-center gap-1 px-1.5 pt-0.5">
+                      <span
+                        className="truncate text-[10px] font-semibold tracking-wide text-[var(--accent)]"
                         title={
-                          p.missing
-                            ? "Session missing on disk — unpin or resume failed"
-                            : open
-                              ? "Focus session"
-                              : "Open pinned session"
+                          section.groupId
+                            ? `Group: ${section.label}`
+                            : section.label
                         }
-                        onClick={() => {
-                          if (open) {
-                            onSelectSession(p.sessionId, p.cwd);
-                            return;
-                          }
-                          if (p.missing) return;
-                          onResumePin(p);
-                        }}
-                        className="flex min-w-0 flex-1 items-start gap-2 px-1 py-0.5 text-left disabled:cursor-not-allowed"
                       >
-                        <span className="mt-1 shrink-0 text-[10px] text-[var(--accent)]">
-                          📌
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1 truncate text-[12px] font-medium">
-                            <SessionTitleLabel
-                              title={p.title || folderName(p.cwd)}
-                              className="text-[12px] font-medium"
-                              onRename={(next) =>
-                                onRenameSession(p.sessionId, next)
-                              }
-                            />
-                            {p.missing ? (
-                              <span className="shrink-0 text-[10px] font-normal text-[var(--danger)]">
-                                missing
-                              </span>
-                            ) : open ? (
-                              <span className="shrink-0 text-[10px] font-normal text-[var(--success)]">
-                                open
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="truncate text-[10px] text-[var(--text-faint)]">
-                            {pinGroup ? (
-                              <span
-                                className="text-[var(--text-muted)]"
-                                title={`Group: ${pinGroup.name}`}
-                              >
-                                {pinGroup.name}
-                                <span className="text-[var(--text-faint)]">
-                                  {" "}
-                                  ·{" "}
-                                </span>
-                              </span>
-                            ) : null}
-                            <span className="mono">
-                              {folderName(p.cwd)} · {shortId(p.sessionId)}
-                            </span>
-                          </div>
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        title="Unpin"
-                        onClick={() => void onUnpin(p.sessionId, p.cwd)}
-                        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--warning)] group-hover:opacity-100"
-                      >
-                        ✕
-                      </button>
+                        {section.label}
+                      </span>
+                      <span className="mono text-[9px] text-[var(--text-faint)]">
+                        {section.items.length}
+                      </span>
                     </div>
-                  </li>
-                );
-              })}
-            </ul>
+                  )}
+                  <ul className="space-y-0.5">
+                    {section.items.map((p) => {
+                      const open = sessions.some(
+                        (s) => s.sessionId === p.sessionId,
+                      );
+                      const selected = p.sessionId === activeId;
+                      return (
+                        <li
+                          key={`${p.sessionId}:${p.cwd}`}
+                          draggable={!!onReorderPins}
+                          onDragStart={() => setDragPinId(p.sessionId)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => onPinDrop(p.sessionId)}
+                          onDragEnd={() => setDragPinId(null)}
+                          className={
+                            dragPinId === p.sessionId
+                              ? "opacity-50"
+                              : undefined
+                          }
+                        >
+                          <div
+                            className={`group flex w-full items-start gap-1 rounded-lg px-1.5 py-1.5 ${
+                              selected
+                                ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
+                                : "hover:bg-[var(--bg-hover)]"
+                            } ${p.missing ? "opacity-60" : ""} ${
+                              onReorderPins
+                                ? "cursor-grab active:cursor-grabbing"
+                                : ""
+                            } ${section.groupId ? "ml-0.5 border-l-2 border-[var(--accent)]/25 pl-1" : ""}`}
+                          >
+                            <button
+                              type="button"
+                              disabled={p.missing && !open}
+                              title={
+                                p.missing
+                                  ? "Session missing on disk — unpin or resume failed"
+                                  : open
+                                    ? "Focus session"
+                                    : "Open pinned session"
+                              }
+                              onClick={() => {
+                                if (open) {
+                                  onSelectSession(p.sessionId, p.cwd);
+                                  return;
+                                }
+                                if (p.missing) return;
+                                onResumePin(p);
+                              }}
+                              className="flex min-w-0 flex-1 items-start gap-2 px-1 py-0.5 text-left disabled:cursor-not-allowed"
+                            >
+                              <span className="mt-1 shrink-0 text-[10px] text-[var(--accent)]">
+                                📌
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1 truncate text-[12px] font-medium">
+                                  <SessionTitleLabel
+                                    title={p.title || folderName(p.cwd)}
+                                    className="text-[12px] font-medium"
+                                    onRename={(next) =>
+                                      onRenameSession(p.sessionId, next)
+                                    }
+                                  />
+                                  {p.missing ? (
+                                    <span className="shrink-0 text-[10px] font-normal text-[var(--danger)]">
+                                      missing
+                                    </span>
+                                  ) : open ? (
+                                    <span className="shrink-0 text-[10px] font-normal text-[var(--success)]">
+                                      open
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="mono truncate text-[10px] text-[var(--text-faint)]">
+                                  {folderName(p.cwd)} · {shortId(p.sessionId)}
+                                </div>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              title="Unpin"
+                              onClick={() =>
+                                void onUnpin(p.sessionId, p.cwd)
+                              }
+                              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--warning)] group-hover:opacity-100"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
           )}
           {resumingPins && (
             <p className="mt-1 px-2 text-[10px] text-[var(--warning)]">
