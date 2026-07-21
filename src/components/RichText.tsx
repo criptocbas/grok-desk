@@ -10,7 +10,9 @@ type Props = {
 export function RichText({ text, className = "" }: Props) {
   const blocks = splitBlocks(text);
   return (
-    <div className={`space-y-2 text-sm leading-relaxed ${className}`}>
+    <div
+      className={`space-y-2 text-sm leading-relaxed text-[var(--text)] ${className}`}
+    >
       {blocks.map((b, i) => (
         <Block key={i} block={b} />
       ))}
@@ -44,7 +46,7 @@ function splitBlocks(text: string): Block[] {
 function Block({ block }: { block: Block }) {
   if (block.kind === "code") {
     return (
-      <pre className="mono overflow-x-auto rounded-md bg-black/40 px-3 py-2 text-[12px] text-[var(--tool)]">
+      <pre className="mono overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[12px] text-[var(--tool)]">
         {block.body}
       </pre>
     );
@@ -64,16 +66,16 @@ function Block({ block }: { block: Block }) {
       continue;
     }
 
-    // headings
+    // headings — use theme text token (never hardcode white; breaks light mode)
     const h = line.match(/^(#{1,4})\s+(.*)$/);
     if (h) {
       const level = h[1].length;
       const cls =
         level === 1
-          ? "mt-3 text-base font-semibold text-white"
+          ? "mt-3 text-base font-semibold text-[var(--text)]"
           : level === 2
-            ? "mt-2.5 text-[15px] font-semibold text-white"
-            : "mt-2 text-[13px] font-semibold text-white/95";
+            ? "mt-2.5 text-[15px] font-semibold text-[var(--text)]"
+            : "mt-2 text-[13px] font-semibold text-[var(--text)]";
       nodes.push(
         <div key={i} className={cls}>
           <Inline text={h[2]} />
@@ -151,8 +153,8 @@ function Block({ block }: { block: Block }) {
                     key={ri}
                     className={
                       ri === 0
-                        ? "border-b border-[var(--border)] font-medium text-white"
-                        : "border-b border-[var(--border)]/40"
+                        ? "border-b border-[var(--border)] font-medium text-[var(--text)]"
+                        : "border-b border-[var(--border)]/40 text-[var(--text)]"
                     }
                   >
                     {row.map((cell, ci) => (
@@ -193,7 +195,7 @@ function Inline({ text }: { text: string }) {
         if (!part) return null;
         if (part.startsWith("**") && part.endsWith("**")) {
           return (
-            <strong key={j} className="font-semibold text-white">
+            <strong key={j} className="font-semibold text-[var(--text)]">
               {part.slice(2, -2)}
             </strong>
           );
@@ -202,7 +204,7 @@ function Inline({ text }: { text: string }) {
           return (
             <code
               key={j}
-              className="mono rounded bg-white/10 px-1 py-0.5 text-[12px] text-[var(--tool)]"
+              className="mono rounded bg-[var(--bg-hover)] px-1 py-0.5 text-[12px] text-[var(--tool)]"
             >
               {part.slice(1, -1)}
             </code>

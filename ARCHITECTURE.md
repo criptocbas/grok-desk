@@ -86,6 +86,7 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `default_cwd` | Sensible starting folder |
 | `show_notification` | OS notification (`notify-send` on Linux) |
 | `list_pins` / `pin_session` / `unpin_session` / `reorder_pins` | Desk pin bookmarks (`~/.config/grok-desk/pins.json`) |
+| `set_session_title` / `get_session_title` | Custom session names (`~/.config/grok-desk/session-titles.json`) |
 
 ## UI reliability (frontend)
 
@@ -96,6 +97,20 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | Stall banner (~90s no ACP traffic) | Recover from “looks frozen” without waiting for RPC end |
 | Timeout messaging | If wait ends, remind user agent may still have written files |
 
+## UI layout (presentation)
+
+```
+Titlebar
+LeftNavigator | Workbench (chrome · transcript · composer) | Utility rail
+  pins · open · project                         Plan | Diff | Activity | Settings
+                                                (resizable, width in localStorage)
+```
+
+- **Design tokens:** `src/index.css` + `src/DESIGN.md` (surface ladder, accent, density).
+- **App.tsx** wires ACP session state and composes layout components — keep it orchestration-only.
+- Caps, stall detection, plan approval, and git auto-refresh live in App/hooks — not reimplemented in panes.
+- **UI prefs:** `grok-desk.prefs.v1` (theme/density/accent), `grok-desk.layout.v1` (utility width).
+
 ## Key files
 
 | Path | Role |
@@ -103,9 +118,15 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `src-tauri/src/acp.rs` | ACP JSON-RPC client + timeouts + plan approval |
 | `src-tauri/src/git.rs` | git status / unified diff |
 | `src-tauri/src/lib.rs` | Tauri commands + state |
-| `src/App.tsx` | Mission control UI |
+| `src/App.tsx` | Session store + ACP listeners + composition |
+| `src/DESIGN.md` | Design system (visual contracts) |
+| `src/lib/*` | Pure helpers (caps, format, plan parse, agent helpers) |
+| `src/components/layout/*` | Titlebar, LeftNavigator, EmptyWorkbench |
+| `src/components/chat/*` | Transcript bubbles, composer, stall/permission banners |
+| `src/components/session/*` | Session chrome (model/effort/perms) |
 | `src/components/PlanPane.tsx` | Plan checklist + approval actions |
 | `src/components/DiffPane.tsx` | Diff + line comments |
+| `src/components/ActivityPane.tsx` | Tools / background tasks |
 | `src/components/RichText.tsx` | Assistant markdown |
 
 ## Reference

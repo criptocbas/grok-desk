@@ -110,18 +110,40 @@ fn save_file(file: &PinsFile) -> Result<(), String> {
 fn enrich(mut pin: SessionPin) -> SessionPin {
     let exists = session_exists_on_disk(&pin.session_id, &pin.cwd);
     pin.missing = !exists;
+    // Desk custom rename always wins
+    if let Ok(Some(custom)) = crate::session_titles::get_session_title(&pin.session_id) {
+        pin.title = Some(custom);
+        return pin;
+    }
     if exists {
         if let Some(t) = read_title_from_disk(&pin.session_id, &pin.cwd) {
             // Prefer live disk title when pin title is empty or stale folder name
             if pin.title.as_deref().unwrap_or("").is_empty() {
                 pin.title = Some(t);
-            } else if pin.title.as_deref() == Path::new(&pin.cwd).file_name().and_then(|s| s.to_str())
+            } else if pin.title.as_deref()
+                == Path::new(&pin.cwd).file_name().and_then(|s| s.to_str())
             {
                 pin.title = Some(t);
             }
         }
     }
     pin
+}
+
+/// Update title on any pin matching session_id (used when user renames).
+pub fn update_pin_title(session_id: &str, title: Option<String>) -> Result<(), String> {
+    let mut file = load_file()?;
+    let mut changed = false;
+    for p in &mut file.pins {
+        if p.session_id == session_id {
+            p.title = title.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        save_file(&file)?;
+    }
+    Ok(())
 }
 
 /// List pins (order preserved), refreshing missing flags / titles from disk.

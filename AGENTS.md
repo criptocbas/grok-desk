@@ -48,21 +48,30 @@ Requires: Rust, Node 20+, system WebKitGTK (Linux), `grok` on PATH.
 ## Layout
 
 ```
-src/App.tsx                 # Mission control UI (sessions, stream, send/cancel)
+src/App.tsx                      # Orchestration: sessions, ACP listeners, compose shell
+src/DESIGN.md                    # Design system (tokens, density, a11y)
+src/lib/                         # Pure helpers (caps, format, plan parse)
+src/components/layout/           # Titlebar, LeftNavigator, EmptyWorkbench
+src/components/chat/             # Composer, bubbles, stall/permission banners
+src/components/session/          # Session chrome (model/effort/perms)
 src/components/PlanPane.tsx
 src/components/DiffPane.tsx
+src/components/ActivityPane.tsx
 src/components/RichText.tsx
-src-tauri/src/acp.rs        # ACP JSON-RPC bridge
-src-tauri/src/git.rs        # git status / diff for Diff pane
-src-tauri/src/lib.rs        # Tauri commands
+src-tauri/src/acp.rs             # ACP JSON-RPC bridge
+src-tauri/src/git.rs             # git status / diff for Diff pane
+src-tauri/src/lib.rs             # Tauri commands
 ```
+
+**UI structure rule:** Prefer new surfaces under `components/{layout,chat,session,command}/`. Do not re-monolith `App.tsx`. Keep caps, stall recovery, and plan-approval wiring intact when extracting.
 
 ## Docs for agents
 
 | File | Use for |
 |------|---------|
 | `ROADMAP.md` | What's done vs next phase |
-| `ARCHITECTURE.md` | Process model, events, commands |
+| `ARCHITECTURE.md` | Process model, events, commands, UI layout |
+| `src/DESIGN.md` | Visual system (tokens, density, what not to do) |
 | `README.md` | User-facing features + quick start |
 
 ## Suggested first turn in a new session

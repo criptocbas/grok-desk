@@ -1,6 +1,7 @@
 mod acp;
 mod git;
 mod pins;
+mod session_titles;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -298,6 +299,17 @@ fn reorder_pins(session_ids: Vec<String>) -> Result<Vec<SessionPin>, String> {
     pins::reorder_pins(session_ids)
 }
 
+/// Custom display name for a session (Desk-owned; not Grok auto-summary).
+#[tauri::command]
+fn set_session_title(session_id: String, title: String) -> Result<Option<String>, String> {
+    session_titles::set_session_title(session_id, title)
+}
+
+#[tauri::command]
+fn get_session_title(session_id: String) -> Result<Option<String>, String> {
+    session_titles::get_session_title(&session_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -330,6 +342,8 @@ pub fn run() {
             pin_session,
             unpin_session,
             reorder_pins,
+            set_session_title,
+            get_session_title,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

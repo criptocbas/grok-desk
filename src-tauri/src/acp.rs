@@ -664,12 +664,20 @@ impl SharedAgent {
                                 if sid.is_empty() || cwd.is_empty() {
                                     continue;
                                 }
-                                let title = v
+                                let auto_title = v
                                     .get("session_summary")
                                     .and_then(|x| x.as_str())
                                     .filter(|s| !s.is_empty())
                                     .map(|s| s.to_string())
+                                    .or_else(|| {
+                                        v.get("generated_title")
+                                            .and_then(|x| x.as_str())
+                                            .filter(|s| !s.is_empty())
+                                            .map(|s| s.to_string())
+                                    })
                                     .or_else(|| Some(folder_title(&cwd)));
+                                let title =
+                                    crate::session_titles::resolve_title(&sid, auto_title);
                                 out.push(DiskSession {
                                     session_id: sid,
                                     cwd,

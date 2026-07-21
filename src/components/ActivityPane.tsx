@@ -14,16 +14,23 @@ type Props = {
   tools: ToolCallItem[];
   backgroundTasks: BackgroundTaskItem[];
   busy: boolean;
+  /** Fill parent (utility rail) — always expanded, no collapsible chrome. */
+  embedded?: boolean;
 };
 
 const RECENT_LIMIT = 20;
 
-export function ActivityPane({ tools, backgroundTasks, busy }: Props) {
+export function ActivityPane({
+  tools,
+  backgroundTasks,
+  busy,
+  embedded = false,
+}: Props) {
   const runningCount = countRunningTools(tools);
   const bgRunning = countRunningBackground(backgroundTasks);
   const live = runningCount + bgRunning;
 
-  const [open, setOpen] = useState(busy || live > 0);
+  const [open, setOpen] = useState(busy || live > 0 || embedded);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -99,6 +106,118 @@ export function ActivityPane({ tools, backgroundTasks, busy }: Props) {
   ]
     .filter(Boolean)
     .join(" · ");
+
+  if (embedded) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+          <span
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+              live > 0
+                ? "status-pulse bg-[var(--warning)]"
+                : "bg-[var(--text-faint)]"
+            }`}
+          />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
+            Live feed
+          </span>
+          {headerMeta && (
+            <span
+              className="mono ml-auto text-[10px] text-[var(--text-muted)]"
+              aria-live="polite"
+            >
+              {headerMeta}
+            </span>
+          )}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {tools.length === 0 && backgroundTasks.length === 0 ? (
+            <p className="px-1 py-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
+              Tool calls, subagents, and background tasks show up here while the
+              agent works.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {(runningTools.length > 0 || runningBg.length > 0) && (
+                <Section label="Running">
+                  {runningBg.map((task) => (
+                    <BgRow
+                      key={`bg-${task.taskId}`}
+                      task={task}
+                      now={now}
+                      expanded={expandedId === `bg-${task.taskId}`}
+                      onToggle={() =>
+                        setExpandedId((id) =>
+                          id === `bg-${task.taskId}`
+                            ? null
+                            : `bg-${task.taskId}`,
+                        )
+                      }
+                    />
+                  ))}
+                  {runningTools.map((tool) => (
+                    <ToolRow
+                      key={tool.id}
+                      tool={tool}
+                      now={now}
+                      expanded={expandedId === tool.id}
+                      onToggle={() =>
+                        setExpandedId((id) =>
+                          id === tool.id ? null : tool.id,
+                        )
+                      }
+                    />
+                  ))}
+                </Section>
+              )}
+              {recentShown.length > 0 && (
+                <Section label="Recent">
+                  {recentShown.map((row) =>
+                    row.kind === "bg" ? (
+                      <BgRow
+                        key={`bg-${row.task.taskId}`}
+                        task={row.task}
+                        now={now}
+                        expanded={expandedId === `bg-${row.task.taskId}`}
+                        onToggle={() =>
+                          setExpandedId((id) =>
+                            id === `bg-${row.task.taskId}`
+                              ? null
+                              : `bg-${row.task.taskId}`,
+                          )
+                        }
+                      />
+                    ) : (
+                      <ToolRow
+                        key={row.tool.id}
+                        tool={row.tool}
+                        now={now}
+                        expanded={expandedId === row.tool.id}
+                        onToggle={() =>
+                          setExpandedId((id) =>
+                            id === row.tool.id ? null : row.tool.id,
+                          )
+                        }
+                      />
+                    ),
+                  )}
+                  {recentCombined.length > RECENT_LIMIT && !showAllRecent && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllRecent(true)}
+                      className="w-full rounded px-1 py-1 text-left text-[10px] text-[var(--text-faint)] hover:text-[var(--text-muted)]"
+                    >
+                      Show all recent ({recentCombined.length})
+                    </button>
+                  )}
+                </Section>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="border-t border-[var(--border)]">

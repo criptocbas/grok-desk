@@ -12,17 +12,14 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AgentInfo,
   AvailableCommand,
-  ChatItem,
   DeskSession,
   DiskSession,
   GitFileStatus,
   GrokStatus,
   ModelOption,
   PermissionMode,
-  PermissionOption,
   PermissionRequest,
   PlanApprovalRequest,
-  PlanEntry,
   QueuedPrompt,
   ReviewComment,
   SessionInfo,
@@ -30,17 +27,16 @@ import type {
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
+import { ActivityPane } from "./components/ActivityPane";
 import {
   InspectorRail,
   type InspectorTab,
 } from "./components/InspectorRail";
 import {
-  SlashPalette,
   filterCommands,
   getSlashMatch,
 } from "./components/SlashPalette";
-import { ActivityPane } from "./components/ActivityPane";
-import { RichText } from "./components/RichText";
+import { SettingsPane } from "./components/settings/SettingsPane";
 import {
   countRunningBackground,
   countRunningTools,
@@ -50,109 +46,36 @@ import {
   upsertBackgroundTask,
   upsertToolCall,
 } from "./activity";
-
-const DEFAULT_EFFORTS = [
-  { id: "high", value: "high", label: "High" },
-  { id: "medium", value: "medium", label: "Medium" },
-  { id: "low", value: "low", label: "Low" },
-] as const;
-
-function pickAllowOption(options: PermissionOption[]): string | null {
-  if (!options.length) return null;
-  const always = options.find((o) =>
-    (o.kind || "").toLowerCase().includes("allow_always"),
-  );
-  if (always) return always.optionId;
-  const once = options.find((o) =>
-    (o.kind || "").toLowerCase().includes("allow"),
-  );
-  if (once) return once.optionId;
-  // Prefer non-reject by name
-  const byName = options.find((o) =>
-    /allow|approve|yes/i.test(o.name || o.optionId),
-  );
-  if (byName) return byName.optionId;
-  return options[0]?.optionId ?? null;
-}
-
-function notifyOs(title: string, body: string) {
-  void invoke("show_notification", { title, body }).catch(() => {
-    /* optional — notify-send may be missing */
-  });
-}
-
-/** Prevent webview OOM from multi-hour thought streams / session replay. */
-const MAX_THOUGHT_CHARS = 6_000;
-const MAX_ASSISTANT_CHARS = 400_000;
-const MAX_TRANSCRIPT_ITEMS = 400;
-/** No ACP session update for this long while busy → show stall banner. */
-const STALL_MS = 90_000;
-/** Debounce git status after file-mutating tools. */
-const GIT_REFRESH_DEBOUNCE_MS = 900;
-
-/** Tools that usually change the working tree — trigger auto Diff refresh. */
-function isMutatingTool(title: string, kind?: string): boolean {
-  const t = `${title} ${kind ?? ""}`.toLowerCase();
-  return (
-    t.includes("write") ||
-    t.includes("search_replace") ||
-    t.includes("edit") ||
-    t.includes("delete") ||
-    t.includes("run_terminal") ||
-    t.includes("bash") ||
-    t.includes("shell") ||
-    t.includes("str_replace") ||
-    t.includes("create_file") ||
-    t.includes("apply_patch")
-  );
-}
-
-function uid() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function extractText(content: unknown): string {
-  if (!content) return "";
-  if (typeof content === "string") return content;
-  if (typeof content === "object" && content !== null) {
-    const c = content as Record<string, unknown>;
-    if (typeof c.text === "string") return c.text;
-    if (c.type === "text" && typeof c.text === "string") return c.text;
-  }
-  return "";
-}
-
-function folderName(cwd: string) {
-  const parts = cwd.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || cwd;
-}
-
-function shortId(id: string) {
-  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
-}
-
-function formatTime(iso?: string | null) {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
-}
-
-type PendingImage = {
-  id: string;
-  mimeType: string;
-  data: string;
-  name: string;
-  previewUrl: string;
-};
+import {
+  DEFAULT_EFFORTS,
+  isMutatingTool,
+  notifyOs,
+  pickAllowOption,
+  readFileAsDataUrl,
+  type PendingImage,
+} from "./lib/agentHelpers";
+import {
+  GIT_REFRESH_DEBOUNCE_MS,
+  MAX_ASSISTANT_CHARS,
+  MAX_THOUGHT_CHARS,
+  MAX_TRANSCRIPT_ITEMS,
+  STALL_MS,
+} from "./lib/caps";
+import { extractText, folderName, shortId, uid } from "./lib/format";
+import {
+  parseAvailableCommands,
+  parsePlanEntries,
+  planFromTodoInput,
+} from "./lib/planParse";
+import { MessageBubble } from "./components/chat/MessageBubble";
+import { StallBanner } from "./components/chat/StallBanner";
+import { PermissionBanner } from "./components/chat/PermissionBanner";
+import { Composer } from "./components/chat/Composer";
+import { Titlebar } from "./components/layout/Titlebar";
+import { LeftNavigator } from "./components/layout/LeftNavigator";
+import { EmptyWorkbench } from "./components/layout/EmptyWorkbench";
+import { SessionChrome } from "./components/session/SessionChrome";
+import { ShortcutsHelp } from "./components/command/ShortcutsHelp";
 
 export default function App() {
   const [grok, setGrok] = useState<GrokStatus | null>(null);
@@ -440,6 +363,37 @@ export default function App() {
     },
     [],
   );
+
+  /** Custom display name — survives restarts (Desk session-titles.json). */
+  const renameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      try {
+        const saved = await invoke<string | null>("set_session_title", {
+          sessionId,
+          title,
+        });
+        const sess = sessionsRef.current.find((s) => s.sessionId === sessionId);
+        const fallback = sess ? folderName(sess.cwd) : "Untitled";
+        const display = (saved && saved.trim()) || fallback;
+        patchSession(sessionId, (s) => ({ ...s, title: display }));
+        // Refresh pins + recents so lists pick up the new name
+        await refreshPins();
+        await refreshDisk();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [patchSession, refreshPins, refreshDisk],
+  );
+
+  const reorderPins = useCallback(async (sessionIds: string[]) => {
+    try {
+      const list = await invoke<SessionPin[]>("reorder_pins", { sessionIds });
+      setPins(list);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
 
   useEffect(() => {
     refreshStatus();
@@ -845,6 +799,11 @@ export default function App() {
           setInspectorTab((t) => (t === "diff" ? null : "diff"));
           return;
         }
+        if (k === "a") {
+          e.preventDefault();
+          setInspectorTab((t) => (t === "activity" ? null : "activity"));
+          return;
+        }
         if (k === "b") {
           e.preventDefault();
           setSidebarCollapsed((v) => !v);
@@ -917,10 +876,20 @@ export default function App() {
     try {
       if (!running) await connect();
       const s = await invoke<SessionInfo>("session_new", { cwd });
+      // Prefer any pre-existing custom title (rare for brand-new ids)
+      let customTitle: string | null = null;
+      try {
+        customTitle =
+          (await invoke<string | null>("get_session_title", {
+            sessionId: s.sessionId,
+          })) ?? null;
+      } catch {
+        /* ignore */
+      }
       const desk: DeskSession = {
         sessionId: s.sessionId,
         cwd: s.cwd,
-        title: s.title || folderName(s.cwd),
+        title: customTitle || s.title || folderName(s.cwd),
         modelId: s.modelId,
         reasoningEffort: s.reasoningEffort ?? null,
         availableModels: s.availableModels ?? info?.availableModels ?? [],
@@ -1048,6 +1017,15 @@ export default function App() {
         sessionId: d.sessionId,
         cwd: d.cwd,
       });
+      let customTitle: string | null = null;
+      try {
+        customTitle =
+          (await invoke<string | null>("get_session_title", {
+            sessionId: d.sessionId,
+          })) ?? null;
+      } catch {
+        /* optional */
+      }
       let planDoc: string | null = null;
       try {
         planDoc =
@@ -1068,7 +1046,7 @@ export default function App() {
           loaded.availableModels?.length
             ? loaded.availableModels
             : s.availableModels,
-        title: d.title || s.title,
+        title: customTitle || d.title || s.title,
         items: [
           ...s.items
             .filter((i) => i.role !== "system" || !i.text.startsWith("Loading"))
@@ -1871,6 +1849,12 @@ export default function App() {
       : (active?.reviewComments?.length ?? 0) > 0
         ? String(active!.reviewComments.length)
         : null;
+  const activityLive = active
+    ? countRunningTools(active.tools) +
+      countRunningBackground(active.backgroundTasks ?? [])
+    : 0;
+  const activityBadge =
+    activityLive > 0 ? String(activityLive) : active?.busy ? "…" : null;
   // stickTick forces re-render when the user pins/unpins auto-scroll.
   const showJumpToLatest =
     !!active && stickTick >= 0 && !isStuckToBottom(active.sessionId);
@@ -1940,1437 +1924,291 @@ export default function App() {
     [prompt, composerCursor],
   );
 
-  const syncComposerCursor = () => {
-    const el = composerRef.current;
-    if (!el) return;
-    setComposerCursor(el.selectionStart ?? 0);
-  };
-
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2">
-        <div className="flex items-center gap-2.5">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              running
-                ? "bg-[var(--success)] shadow-[0_0_10px_var(--success)]"
-                : "bg-[var(--text-faint)]"
-            }`}
-          />
-          <div className="flex flex-col leading-tight">
-            <span className="text-[13px] font-semibold tracking-wide">
-              Grok Desk
-            </span>
-            <span className="text-[10px] text-[var(--text-faint)]">
-              v0.9 · mission control
-            </span>
-          </div>
-        </div>
-        <div className="ml-auto flex items-center gap-2 text-xs text-[var(--text-muted)]">
-          <span
-            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-              active?.busy
-                ? "bg-[var(--warning)]/15 text-[var(--warning)]"
-                : active?.permissions.length
-                  ? "bg-[var(--danger)]/15 text-[var(--danger)]"
-                  : running
-                    ? "bg-[var(--success)]/12 text-[var(--success)]"
-                    : "bg-[var(--bg-panel)] text-[var(--text-muted)]"
-            }`}
-          >
-            {headerStatus}
-          </span>
-          {info?.subscriptionTier && (
-            <span className="hidden rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] text-[var(--accent)] sm:inline">
-              {info.subscriptionTier}
-            </span>
-          )}
-          {info?.authEmail && (
-            <span className="hidden max-w-[12rem] truncate lg:inline">
-              {info.authEmail}
-            </span>
-          )}
-          {grok?.version && (
-            <span className="mono hidden rounded-md bg-[var(--bg-panel)] px-2 py-0.5 text-[10px] xl:inline">
-              {grok.version.replace(/^grok\s+/i, "")}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => setShowShortcuts(true)}
-            className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
-            title="Keyboard shortcuts (Ctrl+/)"
-          >
-            <span className="kbd">?</span>
-          </button>
-        </div>
-      </header>
+      <Titlebar
+        running={running}
+        headerStatus={headerStatus}
+        activeBusy={active?.busy}
+        activePermissionCount={active?.permissions.length}
+        info={info}
+        grok={grok}
+        onShowShortcuts={() => setShowShortcuts(true)}
+      />
 
       <div className="flex min-h-0 flex-1">
-        {/* Sidebar — full or collapsed focus rail */}
-        {sidebarCollapsed ? (
-          <aside
-            className="flex w-12 shrink-0 flex-col items-center border-r border-[var(--border)] bg-[var(--bg-panel)] py-2"
-            aria-label="Collapsed sidebar"
-          >
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              title="Expand sidebar (Ctrl+B / Alt+B)"
-              className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
-            >
-              ›
-            </button>
-            <div
-              className={`mb-2 h-2 w-2 rounded-full ${
-                running
-                  ? active?.busy
-                    ? "animate-pulse bg-[var(--warning)]"
-                    : "bg-[var(--success)]"
-                  : "bg-[var(--text-faint)]"
-              }`}
-              title={headerStatus}
-            />
-            {!running ? (
-              <button
-                type="button"
-                onClick={() => void connect()}
-                disabled={connecting || !grok?.available}
-                title="Connect"
-                className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent)] text-xs font-bold text-[var(--accent-fg)] disabled:opacity-40"
-              >
-                {connecting ? "…" : "C"}
-              </button>
-            ) : null}
-            <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-1">
-              {sessions.map((s) => {
-                const selected = s.sessionId === activeId;
-                const run = countRunningTools(s.tools);
-                return (
-                  <button
-                    key={s.sessionId}
-                    type="button"
-                    title={`${s.title}\n${s.cwd}`}
-                    onClick={() => {
-                      setActiveId(s.sessionId);
-                      setCwd(s.cwd);
-                      void refreshGit(s.cwd);
-                    }}
-                    className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold ${
-                      selected
-                        ? "bg-[var(--bg-active)] text-[var(--accent)] ring-1 ring-[var(--accent)]/40"
-                        : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-                    }`}
-                  >
-                    {(s.title || folderName(s.cwd)).slice(0, 1).toUpperCase()}
-                    {s.busy || run > 0 ? (
-                      <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--warning)]" />
-                    ) : isPinned(s.sessionId, s.cwd) ? (
-                      <span className="absolute bottom-0.5 right-0.5 text-[7px] text-[var(--accent)]">
-                        •
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-            {pins.length > 0 && sessions.length === 0 && (
-              <button
-                type="button"
-                onClick={toggleSidebar}
-                title={`${pins.length} pinned — expand to open`}
-                className="mb-1 text-[10px] text-[var(--accent)]"
-              >
-                📌{pins.length}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setShowRecents(true);
-                setSidebarCollapsed(false);
-                void refreshDisk();
-              }}
-              title="Recents"
-              className="mt-auto flex h-8 w-8 items-center justify-center rounded-md text-[10px] text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-            >
-              ☰
-            </button>
-          </aside>
-        ) : (
-        <aside className="flex w-[17.5rem] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-panel)]">
-          <div className="space-y-2.5 border-b border-[var(--border)] p-3">
-            <div className="flex gap-1.5">
-              {!running ? (
-                <button
-                  onClick={connect}
-                  disabled={connecting || !grok?.available}
-                  className="flex-1 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[var(--accent-fg)] hover:brightness-110 disabled:opacity-40"
-                >
-                  {connecting ? "Connecting…" : "Connect"}
-                </button>
-              ) : (
-                <button
-                  onClick={disconnect}
-                  className="flex-1 rounded-md border border-[var(--border)] px-3 py-2 text-sm text-[var(--text-muted)] hover:border-[var(--danger)] hover:text-[var(--danger)]"
-                >
-                  Disconnect
-                </button>
-              )}
-              <button
-                onClick={() => {
-                  setShowRecents((v) => !v);
-                  void refreshDisk();
-                }}
-                className={`rounded-md border px-3 py-2 text-sm ${
-                  showRecents
-                    ? "border-[var(--accent)]/50 bg-[var(--accent)]/10 text-[var(--accent)]"
-                    : "border-[var(--border)] hover:border-[var(--accent)]"
-                }`}
-                title="Recent sessions on disk"
-              >
-                Recents
-              </button>
-              <button
-                type="button"
-                onClick={toggleSidebar}
-                title="Collapse sidebar (Ctrl+B / Alt+B) — focus mode"
-                className="rounded-md border border-[var(--border)] px-2.5 py-2 text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
-              >
-                ‹
-              </button>
-            </div>
+        <LeftNavigator
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={toggleSidebar}
+          running={running}
+          connecting={connecting}
+          grokAvailable={!!grok?.available}
+          headerStatus={headerStatus}
+          cwd={cwd}
+          onCwdChange={setCwd}
+          onBrowseFolder={() => void browseFolder()}
+          onConnect={() => void connect()}
+          onDisconnect={() => void disconnect()}
+          onOpenSession={() => void openSession()}
+          sessions={sessions}
+          activeId={activeId}
+          onSelectSession={(sessionId, sessionCwd) => {
+            setActiveId(sessionId);
+            setCwd(sessionCwd);
+            void refreshGit(sessionCwd);
+          }}
+          onCloseSession={closeSession}
+          pins={pins}
+          resumingPins={resumingPins}
+          isPinned={isPinned}
+          onPin={(sessionId, sessionCwd, title) =>
+            void pinSession(sessionId, sessionCwd, title)
+          }
+          onUnpin={(sessionId, sessionCwd) =>
+            void unpinSession(sessionId, sessionCwd)
+          }
+          onResumePin={(p) =>
+            void resumeSession(
+              {
+                sessionId: p.sessionId,
+                cwd: p.cwd,
+                title: p.title,
+              },
+              { activate: true },
+            )
+          }
+          onReorderPins={(ids) => void reorderPins(ids)}
+          onRenameSession={(sessionId, title) =>
+            void renameSession(sessionId, title)
+          }
+          showRecents={showRecents}
+          onToggleRecents={() => {
+            setShowRecents((v) => !v);
+            if (sidebarCollapsed) setSidebarCollapsed(false);
+            void refreshDisk();
+          }}
+          diskSessions={diskSessions}
+          onResumeDisk={(d) => void resumeDisk(d)}
+          stderrTail={stderrTail}
+          active={active}
+        />
 
-            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-              Project
-            </div>
-            <div className="flex gap-1">
-              <input
-                value={cwd}
-                onChange={(e) => setCwd(e.target.value)}
-                title={cwd}
-                className="mono min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[11px] outline-none focus:border-[var(--accent)]"
-                placeholder="/path/to/project"
-                spellCheck={false}
-              />
-              <button
-                type="button"
-                onClick={() => void browseFolder()}
-                title="Choose folder"
-                className="shrink-0 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-sm hover:border-[var(--accent)]"
-              >
-                …
-              </button>
-            </div>
-            <button
-              onClick={openSession}
-              disabled={!cwd}
-              className="w-full rounded-md border border-dashed border-[var(--border-strong)] px-3 py-2 text-sm text-[var(--text)] hover:border-[var(--accent)] hover:bg-[var(--accent)]/5 disabled:opacity-40"
-            >
-              + New session
-            </button>
-          </div>
-
-          {/* Sessions: pinned (persistent) + open tabs */}
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {/* Pinned — always visible, survives restarts */}
-            <div className="mb-3">
-              <div className="mb-1.5 flex items-center justify-between px-1">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-                  Pinned
-                </span>
-                <span className="mono text-[10px] text-[var(--text-faint)]">
-                  {resumingPins ? "…" : pins.length}
-                </span>
-              </div>
-              {pins.length === 0 ? (
-                <p className="px-2 text-[11px] leading-relaxed text-[var(--text-faint)]">
-                  Pin a session to reopen it automatically after restart. Use 📌
-                  on a tab or in Recents.
-                </p>
-              ) : (
-                <ul className="space-y-0.5">
-                  {pins.map((p) => {
-                    const open = sessions.some(
-                      (s) => s.sessionId === p.sessionId,
-                    );
-                    const selected = p.sessionId === activeId;
-                    return (
-                      <li key={`${p.sessionId}:${p.cwd}`}>
-                        <div
-                          className={`group flex w-full items-start gap-1 rounded-lg px-1.5 py-1.5 ${
-                            selected
-                              ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-                              : "hover:bg-[var(--bg-hover)]"
-                          } ${p.missing ? "opacity-60" : ""}`}
-                        >
-                          <button
-                            type="button"
-                            disabled={p.missing && !open}
-                            title={
-                              p.missing
-                                ? "Session missing on disk — unpin or resume failed"
-                                : open
-                                  ? "Focus session"
-                                  : "Open pinned session"
-                            }
-                            onClick={() => {
-                              if (open) {
-                                setActiveId(p.sessionId);
-                                setCwd(p.cwd);
-                                void refreshGit(p.cwd);
-                                return;
-                              }
-                              if (p.missing) return;
-                              void resumeSession(
-                                {
-                                  sessionId: p.sessionId,
-                                  cwd: p.cwd,
-                                  title: p.title,
-                                },
-                                { activate: true },
-                              );
-                            }}
-                            className="flex min-w-0 flex-1 items-start gap-2 px-1 py-0.5 text-left disabled:cursor-not-allowed"
-                          >
-                            <span className="mt-1 shrink-0 text-[10px] text-[var(--accent)]">
-                              📌
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[12px] font-medium">
-                                {p.title || folderName(p.cwd)}
-                                {p.missing ? (
-                                  <span className="ml-1 text-[10px] font-normal text-[var(--danger)]">
-                                    missing
-                                  </span>
-                                ) : open ? (
-                                  <span className="ml-1 text-[10px] font-normal text-[var(--success)]">
-                                    open
-                                  </span>
-                                ) : null}
-                              </div>
-                              <div className="mono truncate text-[10px] text-[var(--text-faint)]">
-                                {folderName(p.cwd)} · {shortId(p.sessionId)}
-                              </div>
-                            </div>
-                          </button>
-                          <button
-                            type="button"
-                            title="Unpin"
-                            onClick={() =>
-                              void unpinSession(p.sessionId, p.cwd)
-                            }
-                            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--warning)] group-hover:opacity-100"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-              {resumingPins && (
-                <p className="mt-1 px-2 text-[10px] text-[var(--warning)]">
-                  Restoring pinned sessions…
-                </p>
-              )}
-            </div>
-
-            <div className="mb-2 flex items-center justify-between border-t border-[var(--border)] px-1 pt-3">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-                Open
-              </span>
-              <span className="mono text-[10px] text-[var(--text-faint)]">
-                {sessions.length}
-              </span>
-            </div>
-            {sessions.length === 0 ? (
-              <p className="px-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-                Connect, pick a project folder, then open a session — or click a
-                pin above.
-              </p>
-            ) : (
-              <ul className="space-y-0.5">
-                {sessions.map((s) => {
-                  const selected = s.sessionId === activeId;
-                  const pinned = isPinned(s.sessionId, s.cwd);
-                  return (
-                    <li key={s.sessionId}>
-                      <button
-                        onClick={() => setActiveId(s.sessionId)}
-                        className={`group flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition ${
-                          selected
-                            ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-                            : "hover:bg-[var(--bg-hover)]"
-                        }`}
-                      >
-                        <span
-                          className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-                            s.busy
-                              ? "animate-pulse bg-[var(--warning)]"
-                              : s.permissions.length
-                                ? "bg-[var(--danger)]"
-                                : s.permissionMode === "always-approve"
-                                  ? "bg-[var(--warning)]"
-                                  : "bg-[var(--success)]"
-                          }`}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1 truncate text-[13px] font-medium">
-                            {pinned && (
-                              <span
-                                className="text-[10px] text-[var(--accent)]"
-                                title="Pinned"
-                              >
-                                📌
-                              </span>
-                            )}
-                            <span className="truncate">{s.title}</span>
-                          </div>
-                          <div className="mono truncate text-[10px] text-[var(--text-faint)]">
-                            {folderName(s.cwd)}
-                            {(() => {
-                              const run = countRunningTools(s.tools);
-                              const bg = countRunningBackground(
-                                s.backgroundTasks ?? [],
-                              );
-                              if (run > 0) return ` · ${run} run`;
-                              if (bg > 0) return ` · ${bg} bg`;
-                              if (s.plan.length > 0)
-                                return ` · plan ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`;
-                              return "";
-                            })()}
-                          </div>
-                        </div>
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          title={pinned ? "Unpin" : "Pin (keep after restart)"}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (pinned) {
-                              void unpinSession(s.sessionId, s.cwd);
-                            } else {
-                              void pinSession(s.sessionId, s.cwd, s.title);
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.stopPropagation();
-                              if (pinned) {
-                                void unpinSession(s.sessionId, s.cwd);
-                              } else {
-                                void pinSession(s.sessionId, s.cwd, s.title);
-                              }
-                            }
-                          }}
-                          className={`rounded px-1 text-[11px] opacity-0 group-hover:opacity-100 ${
-                            pinned
-                              ? "text-[var(--accent)] opacity-100"
-                              : "text-[var(--text-faint)] hover:text-[var(--accent)]"
-                          }`}
-                        >
-                          📌
-                        </span>
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          title="Close tab"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            closeSession(s.sessionId);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.stopPropagation();
-                              closeSession(s.sessionId);
-                            }
-                          }}
-                          className="rounded px-1 text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--danger)] group-hover:opacity-100"
-                        >
-                          ×
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-
-            {showRecents && (
-              <div className="mt-4 border-t border-[var(--border)] pt-3">
-                <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-                  From disk
-                </div>
-                <ul className="space-y-1">
-                  {diskSessions.slice(0, 15).map((d) => {
-                    const pinned = isPinned(d.sessionId, d.cwd);
-                    return (
-                      <li
-                        key={d.sessionId}
-                        className="group flex items-start gap-0.5"
-                      >
-                        <button
-                          onClick={() => void resumeDisk(d)}
-                          disabled={!running && !grok?.available}
-                          className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left hover:bg-white/5 disabled:opacity-40"
-                        >
-                          <div className="truncate text-xs font-medium">
-                            {pinned && (
-                              <span className="mr-1 text-[var(--accent)]">
-                                📌
-                              </span>
-                            )}
-                            {d.title || folderName(d.cwd)}
-                          </div>
-                          <div className="mono truncate text-[10px] text-[var(--text-muted)]">
-                            {folderName(d.cwd)} · {formatTime(d.updatedAt)}
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          title={pinned ? "Unpin" : "Pin session"}
-                          onClick={() => {
-                            if (pinned) {
-                              void unpinSession(d.sessionId, d.cwd);
-                            } else {
-                              void pinSession(
-                                d.sessionId,
-                                d.cwd,
-                                d.title || folderName(d.cwd),
-                              );
-                            }
-                          }}
-                          className={`mt-2 shrink-0 rounded px-1.5 text-[11px] ${
-                            pinned
-                              ? "text-[var(--accent)]"
-                              : "text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--accent)]"
-                          }`}
-                        >
-                          📌
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-          </div>
-
-          {active && (
-            <ActivityPane
-              tools={active.tools}
-              backgroundTasks={active.backgroundTasks ?? []}
-              busy={active.busy}
-            />
-          )}
-
-          {stderrTail.length > 0 && (
-            <details className="border-t border-[var(--border)] p-2 text-[10px] text-[var(--text-muted)]">
-              <summary className="cursor-pointer text-[var(--text-faint)]">
-                Agent stderr
-              </summary>
-              <pre className="mono mt-1 max-h-24 overflow-auto whitespace-pre-wrap">
-                {stderrTail.slice(-10).join("\n")}
-              </pre>
-            </details>
-          )}
-        </aside>
-        )}
-
-        {/* Main + plan */}
         <div className="flex min-w-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col">
-          {active ? (
-            <>
-              {/* Session chrome — identity + controls, not competing with Plan/Diff */}
-              <div className="border-b border-[var(--border)] bg-[var(--bg-elevated)]/80">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-semibold text-[var(--text)]">
-                      {active.title}
-                    </div>
-                    <div
-                      className="mono truncate text-[10px] text-[var(--text-faint)]"
-                      title={active.cwd}
-                    >
-                      {active.cwd}
-                    </div>
-                  </div>
+          <main className="flex min-w-0 flex-1 flex-col">
+            {active ? (
+              <>
+                <SessionChrome
+                  session={active}
+                  isPinned={isPinned(active.sessionId, active.cwd)}
+                  sessionModels={sessionModels}
+                  supportsEffort={supportsEffort}
+                  effortOptions={effortOptions}
+                  infoModelId={info?.modelId}
+                  infoEffort={info?.reasoningEffort}
+                  planBadge={planBadge}
+                  diffBadge={diffBadge}
+                  inspectorTab={inspectorTab}
+                  gitFileCount={gitFiles.length}
+                  onPinToggle={() => {
+                    if (isPinned(active.sessionId, active.cwd)) {
+                      void unpinSession(active.sessionId, active.cwd);
+                    } else {
+                      void pinSession(
+                        active.sessionId,
+                        active.cwd,
+                        active.title,
+                      );
+                    }
+                  }}
+                  onRename={(title) =>
+                    void renameSession(active.sessionId, title)
+                  }
+                  onApplyModel={(sessionId, modelId, effort) =>
+                    void applyModelSettings(sessionId, modelId, effort)
+                  }
+                  onPermissionMode={setPermissionMode}
+                  onInspectorTab={setInspectorTab}
+                />
 
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isPinned(active.sessionId, active.cwd)) {
-                          void unpinSession(active.sessionId, active.cwd);
-                        } else {
-                          void pinSession(
-                            active.sessionId,
-                            active.cwd,
-                            active.title,
-                          );
-                        }
-                      }}
-                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        isPinned(active.sessionId, active.cwd)
-                          ? "bg-[var(--accent)]/15 text-[var(--accent)]"
-                          : "bg-[var(--bg-panel)] text-[var(--text-muted)] hover:text-[var(--accent)]"
-                      }`}
-                      title={
-                        isPinned(active.sessionId, active.cwd)
-                          ? "Unpin — won’t auto-open on next launch"
-                          : "Pin — reopen after Desk restart"
-                      }
-                    >
-                      {isPinned(active.sessionId, active.cwd)
-                        ? "📌 Pinned"
-                        : "Pin"}
-                    </button>
-                    {active.modeId === "plan" && (
-                      <span className="rounded-full bg-[var(--thought)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--thought)]">
-                        plan mode
-                      </span>
-                    )}
-                    {(active.reviewComments?.length ?? 0) > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setInspectorTab("diff")}
-                        className="rounded-full bg-[var(--warning)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--warning)] hover:bg-[var(--warning)]/25"
-                      >
-                        {active.reviewComments.length} review note
-                        {active.reviewComments.length === 1 ? "" : "s"}
-                      </button>
-                    )}
-                    {gitFiles.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setInspectorTab("diff")}
-                        className="rounded-full bg-[var(--tool)]/12 px-2 py-0.5 text-[10px] font-medium text-[var(--tool)] hover:bg-[var(--tool)]/20"
-                      >
-                        {gitFiles.length} changed
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)]/70 px-4 py-1.5">
-                  <label className="flex items-center gap-1.5" title="Session model">
-                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                      Model
-                    </span>
-                    <select
-                      value={active.modelId || info?.modelId || ""}
-                      disabled={active.busy || sessionModels.length === 0}
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        if (!next) return;
-                        void applyModelSettings(
-                          active.sessionId,
-                          next,
-                          active.reasoningEffort,
-                        );
-                      }}
-                      className="ctrl-select"
-                    >
-                      {sessionModels.length === 0 ? (
-                        <option value="">
-                          {active.modelId || info?.modelId || "—"}
-                        </option>
-                      ) : (
-                        sessionModels.map((m) => (
-                          <option key={m.modelId} value={m.modelId}>
-                            {m.name || m.modelId}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-
-                  {supportsEffort && (
-                    <label
-                      className="flex items-center gap-1.5"
-                      title="Reasoning effort"
-                    >
-                      <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                        Effort
-                      </span>
-                      <select
-                        value={
-                          active.reasoningEffort ||
-                          info?.reasoningEffort ||
-                          "high"
-                        }
-                        disabled={active.busy || !active.modelId}
-                        onChange={(e) => {
-                          const modelId = active.modelId || info?.modelId;
-                          if (!modelId) return;
-                          void applyModelSettings(
-                            active.sessionId,
-                            modelId,
-                            e.target.value,
-                          );
-                        }}
-                        className="ctrl-select"
-                      >
-                        {effortOptions.map((e) => (
-                          <option key={e.id || e.value} value={e.value || e.id}>
-                            {e.label || e.value}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-
-                  <label
-                    className="flex items-center gap-1.5"
-                    title="Tool permission policy for this tab"
-                  >
-                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                      Perms
-                    </span>
-                    <select
-                      value={active.permissionMode || "default"}
-                      disabled={active.busy}
-                      onChange={(e) =>
-                        setPermissionMode(
-                          active.sessionId,
-                          e.target.value as PermissionMode,
-                        )
-                      }
-                      className={`ctrl-select ${
-                        active.permissionMode === "always-approve"
-                          ? "border-[var(--warning)]/50 text-[var(--warning)]"
-                          : ""
-                      }`}
-                    >
-                      <option value="default">Ask</option>
-                      <option value="always-approve">Always approve</option>
-                    </select>
-                  </label>
-
-                  <div className="ml-auto flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setInspectorTab((t) => (t === "plan" ? null : "plan"))
-                      }
-                      className={`rounded-md px-2 py-1 text-[11px] font-medium ${
-                        inspectorTab === "plan"
-                          ? "bg-[var(--accent)]/15 text-[var(--accent)]"
-                          : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-                      }`}
-                      title="Plan (Alt+P)"
-                    >
-                      Plan
-                      {planBadge ? (
-                        <span className="mono ml-1 opacity-70">{planBadge}</span>
-                      ) : null}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setInspectorTab((t) => (t === "diff" ? null : "diff"))
-                      }
-                      className={`rounded-md px-2 py-1 text-[11px] font-medium ${
-                        inspectorTab === "diff"
-                          ? "bg-[var(--tool)]/15 text-[var(--tool)]"
-                          : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-                      }`}
-                      title="Diff (Alt+D)"
-                    >
-                      Diff
-                      {diffBadge ? (
-                        <span className="mono ml-1 opacity-70">{diffBadge}</span>
-                      ) : null}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {isStalled && (
-                <div className="flex flex-wrap items-center gap-2 border-b border-[var(--warning)]/40 bg-[#2a1f08] px-4 py-2 text-xs">
-                  <span className="text-[var(--warning)]">
-                    No agent traffic for {stallSeconds}s — may still be thinking, or
-                    stuck mid-tool.
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void cancel()}
-                    className="rounded border border-[var(--warning)]/50 px-2 py-0.5 text-[var(--warning)] hover:bg-[var(--warning)]/10"
-                  >
-                    Stop
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => unlockUi(active.sessionId)}
-                    className="rounded border border-[var(--border)] px-2 py-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
-                  >
-                    Unlock UI
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void refreshGit(active.cwd, gitSelected)}
-                    className="rounded border border-[var(--border)] px-2 py-0.5 text-[var(--tool)] hover:bg-[var(--tool)]/10"
-                  >
-                    Refresh diffs
-                  </button>
-                </div>
-              )}
-
-              {active.permissions.length > 0 && (
-                <div className="space-y-2 border-b border-[var(--warning)]/40 bg-[#2a1f08] px-4 py-3">
-                  {active.permissions.map((p) => (
-                    <div
-                      key={p.requestId}
-                      className="rounded-md border border-[var(--warning)]/50 bg-[var(--bg)] p-3"
-                    >
-                      <div className="mb-1 text-xs font-semibold text-[var(--warning)]">
-                        Permission required
-                      </div>
-                      <pre className="mono mb-2 max-h-24 overflow-auto text-[11px] text-[var(--text-muted)]">
-                        {JSON.stringify(p.toolCall ?? p.raw, null, 2).slice(0, 600)}
-                      </pre>
-                      <div className="flex flex-wrap gap-2">
-                        {p.options.map((o) => (
-                          <button
-                            key={o.optionId}
-                            onClick={() =>
-                              respondPermission(
-                                active.sessionId,
-                                p.requestId,
-                                o.optionId,
-                              )
-                            }
-                            className="rounded-md bg-[var(--accent)] px-3 py-1 text-xs font-medium text-[var(--accent-fg)]"
-                          >
-                            {o.name || o.optionId}
-                          </button>
-                        ))}
-                        <button
-                          onClick={() =>
-                            respondPermission(active.sessionId, p.requestId, null)
-                          }
-                          className="rounded border border-[var(--danger)] px-3 py-1 text-xs text-[var(--danger)]"
-                        >
-                          Deny
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="relative min-h-0 flex-1">
-                <div
-                  ref={scrollRef}
-                  onScroll={onTranscriptScroll}
-                  className="h-full overflow-y-auto px-4 py-4"
-                >
-                  <div className="mx-auto max-w-3xl space-y-3">
-                    {active.items.map((item) => (
-                      <MessageBubble key={item.id} item={item} />
-                    ))}
-                  </div>
-                </div>
-                {/* Only show when user scrolled up during a live stream */}
-                {showJumpToLatest && (
-                  <button
-                    type="button"
-                    onClick={() => scrollToLatest(active.sessionId)}
-                    className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1.5 text-[11px] font-medium text-[var(--text)] shadow-[var(--shadow-panel)] hover:border-[var(--accent)]"
-                  >
-                    Jump to latest
-                    {active.busy ? " · streaming" : ""}
-                  </button>
+                {isStalled && (
+                  <StallBanner
+                    stallSeconds={stallSeconds}
+                    onStop={() => void cancel()}
+                    onUnlock={() => unlockUi(active.sessionId)}
+                    onRefreshDiffs={() =>
+                      void refreshGit(active.cwd, gitSelected)
+                    }
+                  />
                 )}
-              </div>
 
-              {error && (
-                <div className="border-t border-[var(--danger)]/40 bg-[#2a1018] px-4 py-2 text-xs text-[var(--danger)]">
-                  {error}
-                </div>
-              )}
+                <PermissionBanner
+                  permissions={active.permissions}
+                  sessionId={active.sessionId}
+                  onRespond={respondPermission}
+                />
 
-              <div className="border-t border-[var(--border)] bg-[var(--bg-elevated)] p-3">
-                <div className="mx-auto max-w-3xl">
-                  {(active.promptQueue?.length ?? 0) > 0 && (
-                    <div className="mb-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2">
-                      <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-semibold text-[var(--text-muted)]">
-                          Queue · {active.promptQueue.length}
-                          {active.busy ? " · runs after current turn" : ""}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            patchSession(active.sessionId, (s) => ({
-                              ...s,
-                              promptQueue: [],
-                              items: [
-                                ...s.items,
-                                {
-                                  id: uid(),
-                                  role: "system",
-                                  text: "Prompt queue cleared.",
-                                  meta: "queue",
-                                },
-                              ],
-                            }))
-                          }
-                          className="text-[10px] text-[var(--text-faint)] hover:text-[var(--danger)]"
-                        >
-                          Clear all
-                        </button>
-                      </div>
-                      <ul className="space-y-1">
-                        {active.promptQueue.map((q, i) => (
-                          <li
-                            key={q.id}
-                            className="flex items-start gap-2 rounded-md bg-[var(--bg-panel)] px-2 py-1 text-[11px]"
-                          >
-                            <span className="mono shrink-0 text-[var(--text-faint)]">
-                              {i + 1}.
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-[var(--text-muted)]">
-                              {q.displayText}
-                              {q.images.length > 0
-                                ? ` · ${q.images.length} img`
-                                : ""}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                removeQueuedPrompt(active.sessionId, q.id)
-                              }
-                              className="shrink-0 text-[var(--text-faint)] hover:text-[var(--danger)]"
-                              title="Remove from queue"
-                            >
-                              ×
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {pendingImages.length > 0 && (
-                    <div className="mb-2 flex flex-wrap gap-2">
-                      {pendingImages.map((img) => (
-                        <div
-                          key={img.id}
-                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-[var(--border)]"
-                        >
-                          <img
-                            src={img.previewUrl}
-                            alt={img.name}
-                            className="h-full w-full object-cover"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setPendingImages((prev) =>
-                                prev.filter((p) => p.id !== img.id),
-                              )
-                            }
-                            className="absolute right-0.5 top-0.5 rounded bg-black/70 px-1 text-[10px] text-white"
-                          >
-                            ×
-                          </button>
-                        </div>
+                <div className="relative min-h-0 flex-1">
+                  <div
+                    ref={scrollRef}
+                    onScroll={onTranscriptScroll}
+                    className="h-full overflow-y-auto px-4 py-4"
+                  >
+                    <div className="mx-auto max-w-3xl space-y-3">
+                      {active.items.map((item) => (
+                        <MessageBubble key={item.id} item={item} />
                       ))}
                     </div>
+                  </div>
+                  {showJumpToLatest && (
+                    <button
+                      type="button"
+                      onClick={() => scrollToLatest(active.sessionId)}
+                      className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1.5 text-[11px] font-medium text-[var(--text)] shadow-[var(--shadow-panel)] hover:border-[var(--accent)]"
+                    >
+                      Jump to latest
+                      {active.busy ? " · streaming" : ""}
+                    </button>
                   )}
-
-                  <SlashPalette
-                    open={slashOpen}
-                    commands={slashCommands}
-                    match={slashMatch}
-                    selectedIndex={slashIndex}
-                    onSelectedIndex={setSlashIndex}
-                    onPick={applySlashCommand}
-                    onClose={() => {
-                      setSlashDismissed(true);
-                      setSlashIndex(0);
-                    }}
-                  />
-
-                  <div className="flex gap-2">
-                    <textarea
-                      ref={composerRef}
-                      value={prompt}
-                      onChange={(e) => {
-                        setPrompt(e.target.value);
-                        setComposerCursor(e.target.selectionStart ?? 0);
-                      }}
-                      onClick={syncComposerCursor}
-                      onKeyUp={syncComposerCursor}
-                      onSelect={syncComposerCursor}
-                      onPaste={onComposerPaste}
-                      onKeyDown={(e) => {
-                        const match = getSlashMatch(
-                          prompt,
-                          e.currentTarget.selectionStart ?? 0,
-                        );
-                        const filtered = match
-                          ? filterCommands(
-                              active.availableCommands ?? [],
-                              match.query,
-                            )
-                          : [];
-                        const paletteActive =
-                          Boolean(match) && !slashDismissed;
-
-                        if (paletteActive && e.key === "Escape") {
-                          e.preventDefault();
-                          setSlashDismissed(true);
-                          setSlashIndex(0);
-                          return;
-                        }
-
-                        if (
-                          paletteActive &&
-                          filtered.length > 0 &&
-                          (e.key === "ArrowDown" || e.key === "ArrowUp")
-                        ) {
-                          e.preventDefault();
-                          setSlashIndex((i) => {
-                            if (e.key === "ArrowDown")
-                              return (i + 1) % filtered.length;
-                            return (i - 1 + filtered.length) % filtered.length;
-                          });
-                          return;
-                        }
-
-                        if (
-                          paletteActive &&
-                          filtered.length > 0 &&
-                          e.key === "Tab"
-                        ) {
-                          e.preventDefault();
-                          const pick = filtered[slashIndex] ?? filtered[0];
-                          if (pick) applySlashCommand(pick);
-                          return;
-                        }
-
-                        // Enter: complete slash if filtering a partial command;
-                        // otherwise send / queue the message.
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          if (
-                            paletteActive &&
-                            filtered.length > 0 &&
-                            match &&
-                            // Exact unique match or user navigating list → complete
-                            (filtered.length === 1 ||
-                              match.query.length > 0 ||
-                              slashIndex > 0)
-                          ) {
-                            e.preventDefault();
-                            const pick = filtered[slashIndex] ?? filtered[0];
-                            if (pick) applySlashCommand(pick);
-                            return;
-                          }
-                          e.preventDefault();
-                          void send();
-                          return;
-                        }
-
-                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                          e.preventDefault();
-                          void send();
-                        }
-                      }}
-                      rows={2}
-                      placeholder={
-                        active.busy
-                          ? "Type next prompt or /command… Enter queues when busy"
-                          : "Message Grok…  / for commands · Enter send · paste images"
-                      }
-                      className="min-h-[56px] flex-1 resize-none rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none focus:border-[var(--accent)]"
-                    />
-                    <div className="flex flex-col gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSlashDismissed(false);
-                          const el = composerRef.current;
-                          if (!el) return;
-                          if (!getSlashMatch(prompt, el.selectionStart ?? 0)) {
-                            const pos = el.selectionStart ?? prompt.length;
-                            const next =
-                              prompt.slice(0, pos) +
-                              (pos > 0 && !/\s$/.test(prompt.slice(0, pos))
-                                ? " /"
-                                : "/") +
-                              prompt.slice(pos);
-                            setPrompt(next);
-                            requestAnimationFrame(() => {
-                              const p = pos + (next.length - prompt.length);
-                              el.focus();
-                              el.setSelectionRange(p, p);
-                              setComposerCursor(p);
-                            });
-                          } else {
-                            el.focus();
-                          }
-                        }}
-                        className="rounded-xl border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                        title="Slash commands & skills"
-                      >
-                        /
-                      </button>
-                      <button
-                        onClick={() => void send()}
-                        disabled={!prompt.trim() && pendingImages.length === 0}
-                        className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-[var(--accent-fg)] hover:brightness-110 disabled:opacity-40"
-                        title={
-                          active.busy
-                            ? "Add to queue — runs after the current turn"
-                            : "Send now"
-                        }
-                      >
-                        {active.busy ? "Queue" : "Send"}
-                      </button>
-                      {active.busy && (
-                        <button
-                          onClick={cancel}
-                          className="rounded-xl border border-[var(--border)] px-4 py-1.5 text-xs text-[var(--text-muted)] hover:border-[var(--danger)] hover:text-[var(--danger)]"
-                        >
-                          Stop
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-faint)]">
-                    <span>
-                      <span className="kbd">/</span> commands
-                      {slashCommands.length > 0
-                        ? ` · ${slashCommands.length}`
-                        : ""}
-                    </span>
-                    <span>
-                      <span className="kbd">Alt</span>+
-                      <span className="kbd">P</span> plan
-                    </span>
-                    <span>
-                      <span className="kbd">Alt</span>+
-                      <span className="kbd">D</span> diff
-                    </span>
-                    <span>
-                      <span className="kbd">Ctrl</span>+
-                      <span className="kbd">/</span> shortcuts
-                    </span>
-                    {active.busy && (
-                      <span className="text-[var(--warning)]">
-                        Composer stays open — queue the next job anytime
-                      </span>
-                    )}
-                  </div>
                 </div>
-              </div>
-            </>
-          ) : (
-            <div className="fade-up flex flex-1 flex-col items-center justify-center gap-4 p-10 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--bg-panel)] text-xl text-[var(--accent)]">
-                ⌂
-              </div>
-              <div className="space-y-2">
-                <p className="text-xl font-semibold tracking-tight text-[var(--text)]">
-                  Mission control for Grok Build
-                </p>
-                <p className="mx-auto max-w-md text-[13px] leading-relaxed text-[var(--text-muted)]">
-                  Chat-first layout. Plan and Diff stay in the right rail until
-                  you need them — open with the toolbar or{" "}
-                  <span className="kbd">Alt</span>+<span className="kbd">P</span>{" "}
-                  / <span className="kbd">D</span>.
-                </p>
-              </div>
-              <ol className="mx-auto max-w-sm space-y-1.5 text-left text-[12px] text-[var(--text-muted)]">
-                <li className="flex gap-2">
-                  <span className="mono text-[var(--accent)]">1</span>
-                  Connect to the local <span className="mono">grok</span> agent
-                </li>
-                <li className="flex gap-2">
-                  <span className="mono text-[var(--accent)]">2</span>
-                  Choose a project folder
-                </li>
-                <li className="flex gap-2">
-                  <span className="mono text-[var(--accent)]">3</span>
-                  Open a session and steer with model, effort, and perms
-                </li>
-              </ol>
-              {!running && (
-                <button
-                  onClick={connect}
-                  disabled={connecting || !grok?.available}
-                  className="mt-1 rounded-xl bg-[var(--accent)] px-6 py-2.5 text-sm font-medium text-[var(--accent-fg)] hover:brightness-110 disabled:opacity-40"
-                >
-                  {connecting ? "Connecting…" : "Connect to Grok"}
-                </button>
+
+                {error && (
+                  <div className="border-t border-[var(--danger)]/40 bg-[#2a1018] px-4 py-2 text-xs text-[var(--danger)]">
+                    {error}
+                  </div>
+                )}
+
+                <Composer
+                  busy={active.busy}
+                  prompt={prompt}
+                  onPromptChange={(value, cursor) => {
+                    setPrompt(value);
+                    setComposerCursor(cursor);
+                  }}
+                  onCursor={setComposerCursor}
+                  composerRef={composerRef}
+                  pendingImages={pendingImages}
+                  onRemoveImage={(id) =>
+                    setPendingImages((prev) => prev.filter((p) => p.id !== id))
+                  }
+                  onPaste={onComposerPaste}
+                  promptQueue={active.promptQueue ?? []}
+                  onClearQueue={() =>
+                    patchSession(active.sessionId, (s) => ({
+                      ...s,
+                      promptQueue: [],
+                      items: [
+                        ...s.items,
+                        {
+                          id: uid(),
+                          role: "system",
+                          text: "Prompt queue cleared.",
+                          meta: "queue",
+                        },
+                      ],
+                    }))
+                  }
+                  onRemoveQueued={(id) =>
+                    removeQueuedPrompt(active.sessionId, id)
+                  }
+                  availableCommands={active.availableCommands ?? []}
+                  slashOpen={slashOpen}
+                  slashCommands={slashCommands}
+                  slashMatch={slashMatch}
+                  slashIndex={slashIndex}
+                  onSlashIndex={setSlashIndex}
+                  onPickSlash={applySlashCommand}
+                  onDismissSlash={() => {
+                    setSlashDismissed(true);
+                    setSlashIndex(0);
+                  }}
+                  slashDismissed={slashDismissed}
+                  onUndismissSlash={() => setSlashDismissed(false)}
+                  onSend={() => void send()}
+                  onCancel={() => void cancel()}
+                />
+              </>
+            ) : (
+              <EmptyWorkbench
+                running={running}
+                connecting={connecting}
+                grokAvailable={!!grok?.available}
+                onConnect={() => void connect()}
+              />
+            )}
+          </main>
+
+          {active && (
+            <InspectorRail
+              tab={inspectorTab}
+              onTab={setInspectorTab}
+              planBadge={planBadge}
+              planAlert={!!active.planApproval}
+              diffBadge={diffBadge}
+              activityBadge={activityBadge}
+              activityAlert={activityLive > 0}
+            >
+              {inspectorTab === "plan" && (
+                <PlanPane
+                  embedded
+                  plan={active.plan}
+                  modeId={active.modeId}
+                  planDoc={active.planDoc}
+                  planApproval={active.planApproval}
+                  busy={active.busy}
+                  onEnterPlanMode={enterPlanMode}
+                  onApprove={approvePlan}
+                  onRevise={revisePlan}
+                  onRefreshDoc={() => void refreshPlanDoc()}
+                  onAbandonPlan={abandonPlan}
+                />
               )}
-              {running && (
-                <p className="text-[12px] text-[var(--text-faint)]">
-                  Pick a folder and click <strong>+ New session</strong>
-                </p>
+              {inspectorTab === "diff" && (
+                <DiffPane
+                  embedded
+                  isRepo={gitIsRepo}
+                  files={gitFiles}
+                  selectedPath={gitSelected}
+                  patch={gitPatch}
+                  error={gitError}
+                  loading={gitLoading}
+                  comments={active.reviewComments ?? []}
+                  onSelectFile={(p) => void selectGitFile(p)}
+                  onRefresh={() => void refreshGit(active.cwd, gitSelected)}
+                  onAddComment={(c) => {
+                    const comment: ReviewComment = { ...c, id: uid() };
+                    patchSession(active.sessionId, (s) => ({
+                      ...s,
+                      reviewComments: [...(s.reviewComments ?? []), comment],
+                    }));
+                  }}
+                  onRemoveComment={(id) => {
+                    patchSession(active.sessionId, (s) => ({
+                      ...s,
+                      reviewComments: (s.reviewComments ?? []).filter(
+                        (x) => x.id !== id,
+                      ),
+                    }));
+                  }}
+                />
               )}
-            </div>
+              {inspectorTab === "activity" && (
+                <ActivityPane
+                  embedded
+                  tools={active.tools}
+                  backgroundTasks={active.backgroundTasks ?? []}
+                  busy={active.busy}
+                />
+              )}
+              {inspectorTab === "settings" && <SettingsPane />}
+            </InspectorRail>
           )}
-        </main>
-
-        {active && (
-          <InspectorRail
-            tab={inspectorTab}
-            onTab={setInspectorTab}
-            planBadge={planBadge}
-            planAlert={!!active.planApproval}
-            diffBadge={diffBadge}
-          >
-            {inspectorTab === "plan" && (
-              <PlanPane
-                embedded
-                plan={active.plan}
-                modeId={active.modeId}
-                planDoc={active.planDoc}
-                planApproval={active.planApproval}
-                busy={active.busy}
-                onEnterPlanMode={enterPlanMode}
-                onApprove={approvePlan}
-                onRevise={revisePlan}
-                onRefreshDoc={() => void refreshPlanDoc()}
-                onAbandonPlan={abandonPlan}
-              />
-            )}
-            {inspectorTab === "diff" && (
-              <DiffPane
-                embedded
-                isRepo={gitIsRepo}
-                files={gitFiles}
-                selectedPath={gitSelected}
-                patch={gitPatch}
-                error={gitError}
-                loading={gitLoading}
-                comments={active.reviewComments ?? []}
-                onSelectFile={(p) => void selectGitFile(p)}
-                onRefresh={() => void refreshGit(active.cwd, gitSelected)}
-                onAddComment={(c) => {
-                  const comment: ReviewComment = { ...c, id: uid() };
-                  patchSession(active.sessionId, (s) => ({
-                    ...s,
-                    reviewComments: [...(s.reviewComments ?? []), comment],
-                  }));
-                }}
-                onRemoveComment={(id) => {
-                  patchSession(active.sessionId, (s) => ({
-                    ...s,
-                    reviewComments: (s.reviewComments ?? []).filter(
-                      (x) => x.id !== id,
-                    ),
-                  }));
-                }}
-              />
-            )}
-          </InspectorRail>
-        )}
         </div>
       </div>
 
-      {showShortcuts && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-6 backdrop-blur-[2px]"
-          role="presentation"
-          onClick={() => setShowShortcuts(false)}
-        >
-          <div
-            role="dialog"
-            aria-label="Keyboard shortcuts"
-            className="fade-up w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] p-5 shadow-[var(--shadow-panel)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-sm font-semibold tracking-wide">
-                Keyboard shortcuts
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowShortcuts(false)}
-                className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
-              >
-                Close
-              </button>
-            </div>
-            <ul className="space-y-2 text-[13px]">
-              {[
-                ["Alt + P", "Toggle Plan panel"],
-                ["Alt + D", "Toggle Diff panel"],
-                ["Esc", "Close panel / slash palette / help"],
-                ["/", "Slash commands & skills palette"],
-                ["↑ ↓ Tab", "Navigate / complete slash command"],
-                ["Enter", "Send, queue if busy, or complete slash"],
-                ["Shift + Enter", "New line in composer"],
-                ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
-                ["📌 Pin", "Keep session across Desk restarts"],
-                ["Ctrl+B / Alt+B", "Collapse / expand left sidebar"],
-                ["Ctrl + /", "This help"],
-              ].map(([keys, desc]) => (
-                <li
-                  key={keys}
-                  className="flex items-center justify-between gap-4 border-b border-[var(--border)]/60 py-2 last:border-0"
-                >
-                  <span className="text-[var(--text-muted)]">{desc}</span>
-                  <span className="mono shrink-0 text-[11px] text-[var(--accent)]">
-                    {keys}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
+      <ShortcutsHelp
+        open={showShortcuts}
+        onClose={() => setShowShortcuts(false)}
+      />
     </div>
   );
-}
-
-function parseAvailableCommands(raw: unknown[]): AvailableCommand[] {
-  const out: AvailableCommand[] = [];
-  const seen = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const o = item as Record<string, unknown>;
-    const name =
-      (typeof o.name === "string" && o.name) ||
-      (typeof o.command === "string" && o.command) ||
-      "";
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    const description =
-      (typeof o.description === "string" && o.description) ||
-      (typeof o.desc === "string" && o.desc) ||
-      null;
-    let inputHint: string | null = null;
-    const input = o.input;
-    if (input && typeof input === "object") {
-      const hint = (input as Record<string, unknown>).hint;
-      if (typeof hint === "string") inputHint = hint;
-    } else if (typeof o.hint === "string") {
-      inputHint = o.hint;
-    }
-    out.push({ name, description, inputHint });
-  }
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  return out;
-}
-
-function parsePlanEntries(raw: unknown): PlanEntry[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const out: PlanEntry[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const o = item as Record<string, unknown>;
-    const content =
-      (typeof o.content === "string" && o.content) ||
-      (typeof o.text === "string" && o.text) ||
-      "";
-    if (!content) continue;
-    out.push({
-      content,
-      priority: (typeof o.priority === "string" && o.priority) || "medium",
-      status: (typeof o.status === "string" && o.status) || "pending",
-    });
-  }
-  return out.length ? out : null;
-}
-
-/** Extract plan steps from todo_write tool payloads. */
-function planFromTodoInput(raw: unknown): PlanEntry[] | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const todos = o.todos;
-  if (!Array.isArray(todos)) return null;
-  const out: PlanEntry[] = [];
-  for (const t of todos) {
-    if (!t || typeof t !== "object") continue;
-    const item = t as Record<string, unknown>;
-    const content = typeof item.content === "string" ? item.content : "";
-    if (!content) continue;
-    out.push({
-      content,
-      priority: "medium",
-      status: (typeof item.status === "string" && item.status) || "pending",
-    });
-  }
-  return out.length ? out : null;
-}
-
-function MessageBubble({ item }: { item: ChatItem }) {
-  if (item.role === "user") {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[color-mix(in_srgb,var(--accent)_22%,transparent)] px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-[var(--text)]">
-          {item.text}
-        </div>
-      </div>
-    );
-  }
-  if (item.role === "thought") {
-    return (
-      <details className="rounded-xl border border-[var(--thought)]/18 bg-[var(--thought)]/5 px-3 py-2 text-xs leading-relaxed text-[var(--thought)]">
-        <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider opacity-70">
-          Thinking
-          {item.text.length > 200
-            ? ` · ${Math.round(item.text.length / 1000)}k chars`
-            : ""}
-        </summary>
-        <div className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap opacity-90">
-          {item.text}
-        </div>
-      </details>
-    );
-  }
-  if (item.role === "tool") {
-    const st = (item.meta || item.status || "").toLowerCase();
-    return (
-      <div className="mono flex items-center gap-2 text-[11px] text-[var(--tool)]">
-        <span className="rounded-md bg-[var(--tool)]/10 px-1.5 py-0.5 text-[10px]">
-          tool
-        </span>
-        <span className="min-w-0 truncate">{item.text}</span>
-        {item.meta && (
-          <span
-            className={
-              st === "completed" || st === "success" || st === "done"
-                ? "text-[var(--success)]"
-                : st === "failed" || st === "error"
-                  ? "text-[var(--danger)]"
-                  : st === "in_progress" || st === "pending" || st === "background"
-                    ? "text-[var(--warning)]"
-                    : "text-[var(--text-faint)]"
-            }
-          >
-            · {item.meta === "in_progress" ? "running" : item.meta}
-          </span>
-        )}
-      </div>
-    );
-  }
-  if (item.role === "system") {
-    return (
-      <div className="text-center text-[11px] text-[var(--text-faint)]">
-        {item.text}
-      </div>
-    );
-  }
-  return (
-    <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-[var(--border)] bg-[var(--bg-panel)] px-3.5 py-2.5 shadow-[0_1px_0_rgba(0,0,0,0.2)]">
-      <RichText text={item.text} />
-    </div>
-  );
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
 }

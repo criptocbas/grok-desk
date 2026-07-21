@@ -49,6 +49,14 @@ Priority order is flexible; pick with the user:
 - [x] Model + effort picker (`session/set_model` + `_meta.reasoningEffort`)
 - [x] Permission modes (ask / always-approve per session tab — client auto-approve)
 - [x] OS notifications when a background session finishes (and when a background tab needs permission)
+- [x] Design system foundation (`src/DESIGN.md` + token ladder, density hooks)
+- [x] Factor UI monolith (`App.tsx` → layout / chat / session components + `lib/*`)
+- [x] Three-surface shell: resizable utility rail (Plan · Diff · Activity · Settings)
+- [x] Pin drag-reorder (wires `reorder_pins`)
+- [x] Settings pane (theme / density / font / accent presets)
+- [ ] Workspace chrome: session tabs, empty states, Ctrl+K command palette, titlebar
+- [ ] Surface polish: structured permissions, composer/plan/diff refinement
+- [ ] A11y + progressive onboarding (ARIA live, skippable coach marks)
 - [ ] Embedded terminal (PTY in project cwd)
 - [ ] File tree + open in external editor
 - [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
