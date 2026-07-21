@@ -24,6 +24,7 @@ import type {
   ReviewComment,
   SessionInfo,
   SessionPin,
+  SessionGroupsState,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
@@ -76,6 +77,10 @@ import { LeftNavigator } from "./components/layout/LeftNavigator";
 import { EmptyWorkbench } from "./components/layout/EmptyWorkbench";
 import { SessionChrome } from "./components/session/SessionChrome";
 import { ShortcutsHelp } from "./components/command/ShortcutsHelp";
+import {
+  CommandPalette,
+  type PaletteCommand,
+} from "./components/command/CommandPalette";
 
 export default function App() {
   const [grok, setGrok] = useState<GrokStatus | null>(null);
@@ -93,6 +98,10 @@ export default function App() {
   const [pins, setPins] = useState<SessionPin[]>([]);
   const [resumingPins, setResumingPins] = useState(false);
   const pinsRestoredRef = useRef(false);
+  const [sessionGroups, setSessionGroups] = useState<SessionGroupsState>({
+    groups: [],
+    membership: {},
+  });
   /** Right inspector: closed by default — chat-first. */
   const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
   /** Left rail collapsed for focus mode (persisted). */
@@ -104,6 +113,7 @@ export default function App() {
     }
   });
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
   const [gitPatch, setGitPatch] = useState("");
@@ -140,8 +150,45 @@ export default function App() {
   const lastActivityRef = useRef<Record<string, number>>({});
   /** Re-render when stick-to-bottom flips so “Jump to latest” can show. */
   const [stickTick, setStickTick] = useState(0);
+  /** Per-session composer drafts (prompt + images) so tab switch never loses input. */
+  const draftsRef = useRef<
+    Record<string, { prompt: string; images: PendingImage[] }>
+  >({});
+  const promptRef = useRef(prompt);
+  promptRef.current = prompt;
+  const pendingImagesRef = useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
 
   const NEAR_BOTTOM_PX = 96;
+
+  const saveDraft = useCallback((sessionId: string | null | undefined) => {
+    if (!sessionId) return;
+    draftsRef.current[sessionId] = {
+      prompt: promptRef.current,
+      images: pendingImagesRef.current,
+    };
+  }, []);
+
+  const loadDraft = useCallback((sessionId: string | null | undefined) => {
+    if (!sessionId) {
+      setPrompt("");
+      setPendingImages([]);
+      setComposerCursor(0);
+      return;
+    }
+    const d = draftsRef.current[sessionId];
+    setPrompt(d?.prompt ?? "");
+    setPendingImages(d?.images ?? []);
+    setComposerCursor(d?.prompt?.length ?? 0);
+    setSlashDismissed(false);
+    setSlashIndex(0);
+  }, []);
+
+  const focusComposer = useCallback(() => {
+    requestAnimationFrame(() => {
+      composerRef.current?.focus();
+    });
+  }, []);
 
   const isStuckToBottom = (sessionId: string | null | undefined) => {
     if (!sessionId) return true;
@@ -263,6 +310,36 @@ export default function App() {
     }
   }, []);
 
+  /** Focus a session tab, persisting composer draft for the previous tab. */
+  const selectSession = useCallback(
+    (sessionId: string, sessionCwd: string) => {
+      const prev = activeIdRef.current;
+      if (prev && prev !== sessionId) {
+        saveDraft(prev);
+      }
+      if (prev !== sessionId) {
+        loadDraft(sessionId);
+      }
+      setActiveId(sessionId);
+      setCwd(sessionCwd);
+      void refreshGit(sessionCwd);
+    },
+    [saveDraft, loadDraft, refreshGit],
+  );
+
+  const cycleSession = useCallback(
+    (dir: 1 | -1) => {
+      const list = sessionsRef.current;
+      if (list.length < 2) return;
+      const cur = activeIdRef.current;
+      const idx = list.findIndex((s) => s.sessionId === cur);
+      const next =
+        list[(idx < 0 ? 0 : idx + dir + list.length) % list.length];
+      if (next) selectSession(next.sessionId, next.cwd);
+    },
+    [selectSession],
+  );
+
   /** Debounced git refresh after mutating tools (mid-run Diff updates). */
   const scheduleGitRefresh = useCallback(
     (sessionId: string) => {
@@ -318,6 +395,18 @@ export default function App() {
     try {
       const list = await invoke<SessionPin[]>("list_pins");
       setPins(list);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const refreshGroups = useCallback(async () => {
+    try {
+      const state = await invoke<SessionGroupsState>("list_session_groups");
+      setSessionGroups({
+        groups: state.groups ?? [],
+        membership: state.membership ?? {},
+      });
     } catch {
       /* ignore */
     }
@@ -399,8 +488,84 @@ export default function App() {
     refreshStatus();
     refreshDisk();
     refreshPins();
+    refreshGroups();
     invoke<string>("default_cwd").then(setCwd).catch(() => {});
-  }, [refreshStatus, refreshDisk, refreshPins]);
+  }, [refreshStatus, refreshDisk, refreshPins, refreshGroups]);
+
+  const applyGroupsState = (state: SessionGroupsState) => {
+    setSessionGroups({
+      groups: state.groups ?? [],
+      membership: state.membership ?? {},
+    });
+  };
+
+  const createGroup = useCallback(
+    async (name: string) => {
+      try {
+        applyGroupsState(
+          await invoke<SessionGroupsState>("create_session_group", { name }),
+        );
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [],
+  );
+
+  const renameGroup = useCallback(async (groupId: string, name: string) => {
+    try {
+      applyGroupsState(
+        await invoke<SessionGroupsState>("rename_session_group", {
+          groupId,
+          name,
+        }),
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const deleteGroup = useCallback(async (groupId: string) => {
+    try {
+      applyGroupsState(
+        await invoke<SessionGroupsState>("delete_session_group", { groupId }),
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const setGroupCollapsed = useCallback(
+    async (groupId: string, collapsed: boolean) => {
+      try {
+        applyGroupsState(
+          await invoke<SessionGroupsState>("set_group_collapsed", {
+            groupId,
+            collapsed,
+          }),
+        );
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [],
+  );
+
+  const setSessionGroup = useCallback(
+    async (sessionId: string, groupId: string | null) => {
+      try {
+        applyGroupsState(
+          await invoke<SessionGroupsState>("set_session_group", {
+            sessionId,
+            groupId,
+          }),
+        );
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     try {
@@ -757,7 +922,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.items, active?.permissions, active?.sessionId]);
 
-  // Keyboard shortcuts (mission control)
+  // Keyboard shortcuts (mission control) — see src/lib/shortcuts.ts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -768,14 +933,28 @@ export default function App() {
           target.tagName === "SELECT" ||
           target.isContentEditable);
 
+      // Ctrl/Cmd+K — command palette (works while typing)
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowPalette((v) => !v);
+        setShowShortcuts(false);
+        return;
+      }
+
       // Ctrl+/ or Cmd+/ — shortcuts help (works even while typing)
       if ((e.ctrlKey || e.metaKey) && e.key === "/") {
         e.preventDefault();
         setShowShortcuts((v) => !v);
+        setShowPalette(false);
         return;
       }
 
+      // Esc layers: palette → help → inspector
       if (e.key === "Escape") {
+        if (showPalette) {
+          setShowPalette(false);
+          return;
+        }
         if (showShortcuts) {
           setShowShortcuts(false);
           return;
@@ -786,7 +965,14 @@ export default function App() {
         }
       }
 
-      // Alt+P / Alt+D — inspector; Alt+B — sidebar (focus mode)
+      // Ctrl+Tab / Ctrl+Shift+Tab — cycle open sessions
+      if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
+        e.preventDefault();
+        cycleSession(e.shiftKey ? -1 : 1);
+        return;
+      }
+
+      // Alt+P/D/A/, — inspector; Alt+B — sidebar
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const k = e.key.toLowerCase();
         if (k === "p") {
@@ -804,6 +990,11 @@ export default function App() {
           setInspectorTab((t) => (t === "activity" ? null : "activity"));
           return;
         }
+        if (k === "," || e.code === "Comma") {
+          e.preventDefault();
+          setInspectorTab((t) => (t === "settings" ? null : "settings"));
+          return;
+        }
         if (k === "b") {
           e.preventDefault();
           setSidebarCollapsed((v) => !v);
@@ -819,11 +1010,27 @@ export default function App() {
         return;
       }
 
+      // Ctrl/Cmd+N — new session
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "n") {
+        if (typing) return;
+        e.preventDefault();
+        if (cwd) void openSession();
+        return;
+      }
+
+      // Ctrl/Cmd+L — focus composer
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "l") {
+        if (typing && target?.tagName === "TEXTAREA") return;
+        e.preventDefault();
+        focusComposer();
+        return;
+      }
+
       if (typing) return;
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showShortcuts, inspectorTab]);
+  }, [showShortcuts, showPalette, inspectorTab, cycleSession, focusComposer, cwd]);
 
   // Auto-open Plan when agent drops a plan checklist (once per arrival)
   useEffect(() => {
@@ -865,6 +1072,8 @@ export default function App() {
       setInfo(null);
       setSessions([]);
       setActiveId(null);
+      draftsRef.current = {};
+      loadDraft(null);
       pinsRestoredRef.current = false;
     } catch (e) {
       setError(String(e));
@@ -915,8 +1124,11 @@ export default function App() {
         planApproval: null,
       };
       stickBottomRef.current[s.sessionId] = true;
+      // Preserve draft of the tab we're leaving; new session starts empty.
+      saveDraft(activeIdRef.current);
       setSessions((prev) => [desk, ...prev]);
       setActiveId(s.sessionId);
+      loadDraft(s.sessionId);
       void refreshGit(s.cwd);
       streamBuf.current[s.sessionId] = {
         assistant: "",
@@ -997,9 +1209,10 @@ export default function App() {
         stickBottomRef.current[d.sessionId] = true;
         return [desk, ...prev];
       });
-      if (activate) setActiveId(d.sessionId);
+      if (activate) {
+        selectSession(d.sessionId, d.cwd);
+      }
       if (alreadyOpen) {
-        if (activate) void refreshGit(d.cwd);
         return true;
       }
 
@@ -1138,16 +1351,28 @@ export default function App() {
   };
 
   const closeSession = (sessionId: string) => {
-    setSessions((prev) => {
-      const next = prev.filter((s) => s.sessionId !== sessionId);
-      if (activeId === sessionId) {
-        setActiveId(next[0]?.sessionId ?? null);
-      }
-      return next;
-    });
+    const wasActive = activeIdRef.current === sessionId;
+    delete draftsRef.current[sessionId];
     delete streamBuf.current[sessionId];
     delete stickBottomRef.current[sessionId];
     inFlightRef.current.delete(sessionId);
+    setSessions((prev) => {
+      const next = prev.filter((s) => s.sessionId !== sessionId);
+      if (wasActive) {
+        const nextS = next[0];
+        if (nextS) {
+          // Don't saveDraft — closed tab's composer is discarded with draftsRef delete.
+          loadDraft(nextS.sessionId);
+          setActiveId(nextS.sessionId);
+          setCwd(nextS.cwd);
+          void refreshGit(nextS.cwd);
+        } else {
+          setActiveId(null);
+          loadDraft(null);
+        }
+      }
+      return next;
+    });
   };
 
   const addImageFiles = async (files: FileList | File[]) => {
@@ -1924,6 +2149,164 @@ export default function App() {
     [prompt, composerCursor],
   );
 
+  const paletteCommands = useMemo((): PaletteCommand[] => {
+    const cmds: PaletteCommand[] = [
+      {
+        id: "connect",
+        label: running ? "Disconnect from Grok" : "Connect to Grok",
+        group: "Agent",
+        shortcut: undefined,
+        enabled: running || !!grok?.available,
+        run: () => {
+          if (running) void disconnect();
+          else void connect();
+        },
+      },
+      {
+        id: "new-session",
+        label: "New session",
+        detail: cwd || "Pick a project folder first",
+        group: "Sessions",
+        shortcut: "Ctrl+N",
+        enabled: !!cwd,
+        run: () => void openSession(),
+      },
+      {
+        id: "focus-composer",
+        label: "Focus composer",
+        group: "Sessions",
+        shortcut: "Ctrl+L",
+        enabled: !!active,
+        run: () => focusComposer(),
+      },
+      {
+        id: "toggle-plan",
+        label: "Toggle Plan panel",
+        group: "Panels",
+        shortcut: "Alt+P",
+        enabled: !!active,
+        run: () => setInspectorTab((t) => (t === "plan" ? null : "plan")),
+      },
+      {
+        id: "toggle-diff",
+        label: "Toggle Diff panel",
+        group: "Panels",
+        shortcut: "Alt+D",
+        enabled: !!active,
+        run: () => setInspectorTab((t) => (t === "diff" ? null : "diff")),
+      },
+      {
+        id: "toggle-activity",
+        label: "Toggle Activity panel",
+        group: "Panels",
+        shortcut: "Alt+A",
+        enabled: !!active,
+        run: () =>
+          setInspectorTab((t) => (t === "activity" ? null : "activity")),
+      },
+      {
+        id: "toggle-settings",
+        label: "Toggle Settings",
+        group: "Panels",
+        shortcut: "Alt+,",
+        enabled: !!active,
+        run: () =>
+          setInspectorTab((t) => (t === "settings" ? null : "settings")),
+      },
+      {
+        id: "toggle-sidebar",
+        label: sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
+        group: "Panels",
+        shortcut: "Ctrl+B",
+        run: () => setSidebarCollapsed((v) => !v),
+      },
+      {
+        id: "browse-folder",
+        label: "Choose project folder…",
+        group: "Sessions",
+        run: () => void browseFolder(),
+      },
+      {
+        id: "toggle-recents",
+        label: showRecents ? "Hide recents" : "Show recents",
+        group: "Sessions",
+        run: () => {
+          setShowRecents((v) => !v);
+          if (sidebarCollapsed) setSidebarCollapsed(false);
+          void refreshDisk();
+        },
+      },
+      {
+        id: "shortcuts",
+        label: "Keyboard shortcuts",
+        group: "Help",
+        shortcut: "Ctrl+/",
+        run: () => setShowShortcuts(true),
+      },
+    ];
+
+    for (const s of sessions) {
+      cmds.push({
+        id: `session:${s.sessionId}`,
+        label: s.title || folderName(s.cwd),
+        detail: `${folderName(s.cwd)} · ${shortId(s.sessionId)}${s.busy ? " · busy" : ""}`,
+        group: "Open sessions",
+        run: () => selectSession(s.sessionId, s.cwd),
+      });
+    }
+
+    for (const p of pins.filter((x) => !x.missing).slice(0, 12)) {
+      const open = sessions.some((s) => s.sessionId === p.sessionId);
+      cmds.push({
+        id: `pin:${p.sessionId}`,
+        label: p.title || folderName(p.cwd),
+        detail: open
+          ? `Pinned · open · ${folderName(p.cwd)}`
+          : `Pinned · ${folderName(p.cwd)}`,
+        group: "Pins",
+        run: () => {
+          if (open) selectSession(p.sessionId, p.cwd);
+          else
+            void resumeSession(
+              {
+                sessionId: p.sessionId,
+                cwd: p.cwd,
+                title: p.title,
+              },
+              { activate: true },
+            );
+        },
+      });
+    }
+
+    if (active) {
+      const pinned = isPinned(active.sessionId, active.cwd);
+      cmds.push({
+        id: "pin-active",
+        label: pinned ? "Unpin current session" : "Pin current session",
+        group: "Sessions",
+        run: () => {
+          if (pinned) void unpinSession(active.sessionId, active.cwd);
+          else void pinSession(active.sessionId, active.cwd, active.title);
+        },
+      });
+    }
+
+    return cmds;
+  }, [
+    running,
+    grok?.available,
+    cwd,
+    active,
+    sessions,
+    pins,
+    sidebarCollapsed,
+    showRecents,
+    selectSession,
+    focusComposer,
+    isPinned,
+  ]);
+
   return (
     <div className="flex h-full flex-col">
       <Titlebar
@@ -1952,11 +2335,7 @@ export default function App() {
           onOpenSession={() => void openSession()}
           sessions={sessions}
           activeId={activeId}
-          onSelectSession={(sessionId, sessionCwd) => {
-            setActiveId(sessionId);
-            setCwd(sessionCwd);
-            void refreshGit(sessionCwd);
-          }}
+          onSelectSession={selectSession}
           onCloseSession={closeSession}
           pins={pins}
           resumingPins={resumingPins}
@@ -1980,6 +2359,17 @@ export default function App() {
           onReorderPins={(ids) => void reorderPins(ids)}
           onRenameSession={(sessionId, title) =>
             void renameSession(sessionId, title)
+          }
+          groups={sessionGroups.groups}
+          groupMembership={sessionGroups.membership}
+          onCreateGroup={(name) => void createGroup(name)}
+          onRenameGroup={(id, name) => void renameGroup(id, name)}
+          onDeleteGroup={(id) => void deleteGroup(id)}
+          onSetGroupCollapsed={(id, collapsed) =>
+            void setGroupCollapsed(id, collapsed)
+          }
+          onSetSessionGroup={(sessionId, groupId) =>
+            void setSessionGroup(sessionId, groupId)
           }
           showRecents={showRecents}
           onToggleRecents={() => {
@@ -2072,7 +2462,7 @@ export default function App() {
                 </div>
 
                 {error && (
-                  <div className="border-t border-[var(--danger)]/40 bg-[#2a1018] px-4 py-2 text-xs text-[var(--danger)]">
+                  <div className="border-t border-[var(--danger)]/40 bg-[var(--bg-danger-subtle)] px-4 py-2 text-xs text-[var(--danger)]">
                     {error}
                   </div>
                 )}
@@ -2133,6 +2523,22 @@ export default function App() {
                 connecting={connecting}
                 grokAvailable={!!grok?.available}
                 onConnect={() => void connect()}
+                cwd={cwd}
+                onNewSession={() => void openSession()}
+                onBrowseFolder={() => void browseFolder()}
+                pins={pins}
+                onResumePin={(p) =>
+                  void resumeSession(
+                    {
+                      sessionId: p.sessionId,
+                      cwd: p.cwd,
+                      title: p.title,
+                    },
+                    { activate: true },
+                  )
+                }
+                diskSessions={diskSessions}
+                onResumeDisk={(d) => void resumeDisk(d)}
               />
             )}
           </main>
@@ -2204,6 +2610,12 @@ export default function App() {
           )}
         </div>
       </div>
+
+      <CommandPalette
+        open={showPalette}
+        commands={paletteCommands}
+        onClose={() => setShowPalette(false)}
+      />
 
       <ShortcutsHelp
         open={showShortcuts}

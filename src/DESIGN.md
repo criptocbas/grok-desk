@@ -34,9 +34,10 @@ Never pure `#000` or `#fff` (eye strain / halo on OLED).
 |-------|-----|
 | `--accent` | Primary actions, selection, brand (forge copper default) |
 | `--accent-fg` | Text on solid accent buttons |
-| `--success` | Ready, completed, approve |
-| `--warning` | Busy, stall, always-approve, plan waiting |
-| `--danger` | Deny, errors, failed tools |
+| `--success` / `--success-fg` | Ready, completed, approve (fg = text on solid success) |
+| `--warning` / `--warning-fg` | Busy, stall, always-approve, plan waiting |
+| `--danger` / `--danger-fg` | Deny, errors, failed tools |
+| `--bg-warning-subtle` / `--bg-danger-subtle` | Banner / alert surfaces (stall, permission, errors) |
 | `--tool` | Tool/diff/activity (teal) |
 | `--thought` | Plan mode / thinking (violet) |
 

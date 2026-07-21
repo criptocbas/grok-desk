@@ -59,6 +59,19 @@ export type SessionPin = {
   missing?: boolean;
 };
 
+/** Named folder for organizing sessions (`~/.config/grok-desk/session-groups.json`). */
+export type SessionGroup = {
+  id: string;
+  name: string;
+  collapsed?: boolean;
+};
+
+export type SessionGroupsState = {
+  groups: SessionGroup[];
+  /** sessionId → groupId */
+  membership: Record<string, string>;
+};
+
 export type PermissionOption = {
   optionId: string;
   name: string;

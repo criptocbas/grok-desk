@@ -265,7 +265,7 @@ function RailBtn({
       <span>{label[0]}</span>
       {badge ? (
         <span
-          className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[8px] font-bold text-black"
+          className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[8px] font-bold text-[var(--accent-fg)]"
           style={{ background: accent }}
         >
           {badge.length > 3 ? "•" : badge}

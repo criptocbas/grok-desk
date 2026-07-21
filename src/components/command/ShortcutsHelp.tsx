@@ -1,25 +1,14 @@
+import { shortcutHelpRows } from "../../lib/shortcuts";
+
 type Props = {
   open: boolean;
   onClose: () => void;
 };
 
-const SHORTCUTS: [string, string][] = [
-  ["Alt + P", "Toggle Plan panel"],
-  ["Alt + D", "Toggle Diff panel"],
-  ["Alt + A", "Toggle Activity panel"],
-  ["Esc", "Close panel / slash palette / help"],
-  ["/", "Slash commands & skills palette"],
-  ["↑ ↓ Tab", "Navigate / complete slash command"],
-  ["Enter", "Send, queue if busy, or complete slash"],
-  ["Shift + Enter", "New line in composer"],
-  ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
-  ["📌 Pin", "Keep session across Desk restarts · drag to reorder"],
-  ["Ctrl+B / Alt+B", "Collapse / expand left sidebar"],
-  ["Ctrl + /", "This help"],
-];
-
 export function ShortcutsHelp({ open, onClose }: Props) {
   if (!open) return null;
+
+  const rows = shortcutHelpRows();
 
   return (
     <div
@@ -45,10 +34,10 @@ export function ShortcutsHelp({ open, onClose }: Props) {
             Close
           </button>
         </div>
-        <ul className="space-y-2 text-[13px]">
-          {SHORTCUTS.map(([keys, desc]) => (
+        <ul className="max-h-[min(28rem,70vh)] space-y-0 overflow-y-auto text-[13px]">
+          {rows.map(([keys, desc]) => (
             <li
-              key={keys}
+              key={`${keys}:${desc}`}
               className="flex items-center justify-between gap-4 border-b border-[var(--border)]/60 py-2 last:border-0"
             >
               <span className="text-[var(--text-muted)]">{desc}</span>

@@ -1,6 +1,7 @@
 mod acp;
 mod git;
 mod pins;
+mod session_groups;
 mod session_titles;
 
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use git::{GitDiffResult, GitStatusResult};
 use parking_lot::Mutex;
 use pins::SessionPin;
 use serde_json::Value;
+use session_groups::SessionGroupsState;
 use tauri::{AppHandle, Emitter, State};
 
 struct AppState {
@@ -310,6 +312,50 @@ fn get_session_title(session_id: String) -> Result<Option<String>, String> {
     session_titles::get_session_title(&session_id)
 }
 
+#[tauri::command]
+fn list_session_groups() -> Result<SessionGroupsState, String> {
+    session_groups::list_session_groups()
+}
+
+#[tauri::command]
+fn create_session_group(name: String) -> Result<SessionGroupsState, String> {
+    session_groups::create_session_group(name)
+}
+
+#[tauri::command]
+fn rename_session_group(
+    group_id: String,
+    name: String,
+) -> Result<SessionGroupsState, String> {
+    session_groups::rename_session_group(group_id, name)
+}
+
+#[tauri::command]
+fn delete_session_group(group_id: String) -> Result<SessionGroupsState, String> {
+    session_groups::delete_session_group(group_id)
+}
+
+#[tauri::command]
+fn set_group_collapsed(
+    group_id: String,
+    collapsed: bool,
+) -> Result<SessionGroupsState, String> {
+    session_groups::set_group_collapsed(group_id, collapsed)
+}
+
+#[tauri::command]
+fn set_session_group(
+    session_id: String,
+    group_id: Option<String>,
+) -> Result<SessionGroupsState, String> {
+    session_groups::set_session_group(session_id, group_id)
+}
+
+#[tauri::command]
+fn reorder_session_groups(group_ids: Vec<String>) -> Result<SessionGroupsState, String> {
+    session_groups::reorder_session_groups(group_ids)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -344,6 +390,13 @@ pub fn run() {
             reorder_pins,
             set_session_title,
             get_session_title,
+            list_session_groups,
+            create_session_group,
+            rename_session_group,
+            delete_session_group,
+            set_group_collapsed,
+            set_session_group,
+            reorder_session_groups,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

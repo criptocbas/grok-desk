@@ -92,7 +92,7 @@ export function Composer({
                 <button
                   type="button"
                   onClick={() => onRemoveImage(img.id)}
-                  className="absolute right-0.5 top-0.5 rounded bg-black/70 px-1 text-[10px] text-white"
+                  className="absolute right-0.5 top-0.5 rounded bg-[var(--bg)]/85 px-1 text-[10px] text-[var(--text)] ring-1 ring-[var(--border-strong)]"
                 >
                   ×
                 </button>

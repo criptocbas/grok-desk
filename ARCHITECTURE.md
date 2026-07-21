@@ -87,6 +87,7 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `show_notification` | OS notification (`notify-send` on Linux) |
 | `list_pins` / `pin_session` / `unpin_session` / `reorder_pins` | Desk pin bookmarks (`~/.config/grok-desk/pins.json`) |
 | `set_session_title` / `get_session_title` | Custom session names (`~/.config/grok-desk/session-titles.json`) |
+| `list_session_groups` / create / rename / delete / set membership | Session folders (`~/.config/grok-desk/session-groups.json`) |
 
 ## UI reliability (frontend)
 

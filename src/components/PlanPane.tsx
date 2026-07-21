@@ -77,7 +77,7 @@ export function PlanPane({
           <div className="flex flex-wrap gap-1.5">
             <button
               onClick={onApprove}
-              className="rounded-md bg-[var(--success)] px-2.5 py-1.5 text-[11px] font-medium text-black"
+              className="rounded-md bg-[var(--success)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--success-fg)]"
             >
               Approve & run
             </button>
@@ -238,7 +238,7 @@ export function PlanPane({
                   setDocOpen(false);
                   onApprove();
                 }}
-                className="rounded-md bg-[var(--success)] px-3 py-1 text-xs font-medium text-black"
+                className="rounded-md bg-[var(--success)] px-3 py-1 text-xs font-medium text-[var(--success-fg)]"
               >
                 Approve & run
               </button>

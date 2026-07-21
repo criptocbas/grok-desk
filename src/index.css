@@ -35,6 +35,13 @@
   --danger: #f2556e;
   --thought: #a78bfa;
   --tool: #4ecdc4;
+  /* Solid button foregrounds on semantic fills */
+  --success-fg: #0a1a10;
+  --warning-fg: #1a1406;
+  --danger-fg: #1a080c;
+  /* Banner / alert surfaces (theme-safe) */
+  --bg-warning-subtle: color-mix(in srgb, var(--warning) 12%, var(--bg));
+  --bg-danger-subtle: color-mix(in srgb, var(--danger) 12%, var(--bg));
 
   /* Geometry — 4/8 grid, 6–8px radii */
   --radius-sm: 6px;
@@ -94,6 +101,11 @@ html[data-theme="light"] {
   --danger: #c23048;
   --thought: #6d4fc4;
   --tool: #0f766e;
+  --success-fg: #f0fdf4;
+  --warning-fg: #fffbeb;
+  --danger-fg: #fff5f6;
+  --bg-warning-subtle: color-mix(in srgb, var(--warning) 14%, var(--bg));
+  --bg-danger-subtle: color-mix(in srgb, var(--danger) 12%, var(--bg));
   --shadow-panel: 0 8px 28px rgba(0, 0, 0, 0.08);
 }
 

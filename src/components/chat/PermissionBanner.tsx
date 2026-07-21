@@ -19,7 +19,7 @@ export function PermissionBanner({
 
   return (
     <div
-      className="space-y-2 border-b border-[var(--warning)]/40 bg-[#2a1f08] px-4 py-3"
+      className="space-y-2 border-b border-[var(--warning)]/40 bg-[var(--bg-warning-subtle)] px-4 py-3"
       role="alertdialog"
       aria-label="Permission required"
     >
