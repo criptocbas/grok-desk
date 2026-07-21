@@ -1,4 +1,5 @@
 import {
+  useRef,
   type ClipboardEvent,
   type KeyboardEvent,
   type RefObject,
@@ -21,6 +22,8 @@ type Props = {
   pendingImages: PendingImage[];
   onRemoveImage: (id: string) => void;
   onPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => void;
+  /** Attach image files (file picker fallback when paste fails on Wayland). */
+  onAttachImages?: (files: FileList | File[]) => void;
   promptQueue: QueuedPrompt[];
   onClearQueue: () => void;
   onRemoveQueued: (id: string) => void;
@@ -47,6 +50,7 @@ export function Composer({
   pendingImages,
   onRemoveImage,
   onPaste,
+  onAttachImages,
   promptQueue,
   onClearQueue,
   onRemoveQueued,
@@ -63,6 +67,8 @@ export function Composer({
   onSend,
   onCancel,
 }: Props) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const syncCursor = (el: HTMLTextAreaElement) => {
     onCursor(el.selectionStart ?? 0);
   };
@@ -186,11 +192,35 @@ export function Composer({
             placeholder={
               busy
                 ? "Type next prompt or /command… Enter queues when busy"
-                : "Message Grok…  / for commands · Enter send · paste images"
+                : "Message Grok…  / for commands · Enter send · Ctrl+V image"
             }
             className="min-h-[56px] flex-1 resize-none rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none focus:border-[var(--accent)]"
           />
           <div className="flex flex-col gap-1">
+            {onAttachImages && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (files?.length) onAttachImages(files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-xl border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                  title="Attach image file(s)"
+                >
+                  🖼
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -259,6 +289,9 @@ export function Composer({
           <span>
             <span className="kbd">Ctrl</span>+
             <span className="kbd">/</span> shortcuts
+          </span>
+          <span title="Screenshots: focus composer, then Ctrl+V">
+            paste / 🖼 attach images
           </span>
           {busy && (
             <span className="text-[var(--warning)]">

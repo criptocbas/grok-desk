@@ -1649,40 +1649,128 @@ export default function App() {
     });
   };
 
-  const addImageFiles = async (files: FileList | File[]) => {
-    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    for (const file of list) {
-      const dataUrl = await readFileAsDataUrl(file);
-      const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-      if (!m) continue;
-      const previewUrl = dataUrl;
+  const pushPendingImage = useCallback(
+    (mimeType: string, data: string, name?: string) => {
+      const mime = mimeType || "image/png";
+      const previewUrl = `data:${mime};base64,${data}`;
       setPendingImages((prev) => [
         ...prev,
         {
           id: uid(),
-          mimeType: m[1] || file.type || "image/png",
-          data: m[2],
-          name: file.name || `paste-${Date.now()}.png`,
+          mimeType: mime,
+          data,
+          name: name || `paste-${Date.now()}.png`,
           previewUrl,
         },
       ]);
+    },
+    [],
+  );
+
+  const addImageFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).filter(
+      (f) =>
+        f.type.startsWith("image/") ||
+        (!f.type && /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)),
+    );
+    for (const file of list) {
+      const dataUrl = await readFileAsDataUrl(file);
+      const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) continue;
+      pushPendingImage(
+        m[1] || file.type || "image/png",
+        m[2],
+        file.name || undefined,
+      );
     }
   };
 
+  /** Wayland/WebKit often omits screenshot pixels from paste events — use OS clipboard. */
+  const tryNativeClipboardImage = useCallback(async (): Promise<boolean> => {
+    try {
+      const img = await invoke<{
+        mimeType: string;
+        data: string;
+        name: string;
+      } | null>("clipboard_read_image");
+      if (!img?.data) return false;
+      pushPendingImage(img.mimeType, img.data, img.name);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [pushPendingImage]);
+
   const onComposerPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
+    const cd = e.clipboardData;
     const files: File[] = [];
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith("image/")) {
-        const f = item.getAsFile();
-        if (f) files.push(f);
+
+    // 1) clipboardData.files (some WebKit builds put screenshots here)
+    if (cd?.files?.length) {
+      for (const f of Array.from(cd.files)) {
+        if (
+          f.type.startsWith("image/") ||
+          (!f.type && /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name))
+        ) {
+          files.push(f);
+        }
       }
     }
+
+    // 2) clipboardData.items → getAsFile()
+    if (cd?.items) {
+      for (const item of Array.from(cd.items)) {
+        if (item.kind === "file" || item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (
+            f &&
+            (f.type.startsWith("image/") ||
+              !f.type ||
+              /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name))
+          ) {
+            if (!files.some((x) => x.name === f.name && x.size === f.size)) {
+              files.push(f);
+            }
+          }
+        }
+      }
+    }
+
     if (files.length) {
       e.preventDefault();
       void addImageFiles(files);
+      return;
     }
+
+    // 3) Async Clipboard API + 4) native wl-paste/xclip
+    // WebKit on Wayland often delivers an empty paste event for screenshots.
+    // Only intercept when there's no plain text so we don't steal normal pastes.
+    const hasText = Boolean(cd?.getData("text/plain")?.trim());
+    if (hasText) return;
+
+    e.preventDefault();
+    void (async () => {
+      try {
+        if (navigator.clipboard?.read) {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            const type = item.types.find((t) => t.startsWith("image/"));
+            if (!type) continue;
+            const blob = await item.getType(type);
+            const file = new File(
+              [blob],
+              `paste-${Date.now()}.${type.split("/")[1] || "png"}`,
+              { type },
+            );
+            await addImageFiles([file]);
+            return;
+          }
+        }
+      } catch {
+        /* NotAllowedError / unsupported — fall through */
+      }
+      await tryNativeClipboardImage();
+    })();
   };
 
   const removeQueuedPrompt = (sessionId: string, queueId: string) => {
@@ -2800,6 +2888,7 @@ export default function App() {
                     setPendingImages((prev) => prev.filter((p) => p.id !== id))
                   }
                   onPaste={onComposerPaste}
+                  onAttachImages={(files) => void addImageFiles(files)}
                   promptQueue={active.promptQueue ?? []}
                   onClearQueue={() =>
                     patchSession(active.sessionId, (s) => ({

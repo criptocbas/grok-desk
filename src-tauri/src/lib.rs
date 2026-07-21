@@ -1,4 +1,5 @@
 mod acp;
+mod clipboard;
 mod git;
 mod install;
 mod pins;
@@ -401,6 +402,13 @@ fn read_update_log(max_bytes: Option<usize>) -> Result<String, String> {
     install::read_update_log(max_bytes.unwrap_or(12_000))
 }
 
+/// Read image bytes from the OS clipboard (wl-paste / xclip).
+/// WebKit paste often omits screenshots on Wayland — this is the fallback.
+#[tauri::command]
+fn clipboard_read_image() -> Result<Option<clipboard::ClipboardImage>, String> {
+    clipboard::read_image()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -449,6 +457,7 @@ pub fn run() {
             check_for_updates,
             start_self_update,
             read_update_log,
+            clipboard_read_image,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

@@ -1467,6 +1467,7 @@ dependencies = [
 name = "grok-desk"
 version = "0.9.0"
 dependencies = [
+ "base64 0.22.1",
  "env_logger",
  "log",
  "parking_lot",
