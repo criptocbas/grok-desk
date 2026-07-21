@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Props = {
@@ -16,6 +16,66 @@ export function RichText({ text, className = "" }: Props) {
       {blocks.map((b, i) => (
         <Block key={i} block={b} />
       ))}
+    </div>
+  );
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function CodeBlock({ lang, body }: { lang: string; body: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle");
+
+  const onCopy = useCallback(async () => {
+    const ok = await copyToClipboard(body.replace(/\n$/, ""));
+    setState(ok ? "copied" : "error");
+    window.setTimeout(() => setState("idle"), 1600);
+  }, [body]);
+
+  return (
+    <div className="group/code relative my-1 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg)]">
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)]/60 px-2.5 py-1">
+        <span className="mono truncate text-[10px] text-[var(--text-faint)]">
+          {lang || "code"}
+        </span>
+        <button
+          type="button"
+          onClick={() => void onCopy()}
+          className="shrink-0 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
+          title="Copy to clipboard"
+        >
+          {state === "copied"
+            ? "Copied"
+            : state === "error"
+              ? "Failed"
+              : "Copy"}
+        </button>
+      </div>
+      <pre className="mono max-h-80 overflow-auto px-3 py-2 text-[12px] leading-relaxed text-[var(--tool)]">
+        {body}
+      </pre>
     </div>
   );
 }
@@ -45,11 +105,7 @@ function splitBlocks(text: string): Block[] {
 
 function Block({ block }: { block: Block }) {
   if (block.kind === "code") {
-    return (
-      <pre className="mono overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[12px] text-[var(--tool)]">
-        {block.body}
-      </pre>
-    );
+    return <CodeBlock lang={block.lang} body={block.body} />;
   }
 
   const nodes: ReactNode[] = [];
