@@ -4,18 +4,21 @@
 
 Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://agentclientprotocol.com) to `grok agent stdio`.
 
-![Phase 2](https://img.shields.io/badge/phase-2%20review%20loop-00a8ff)
+![Phase 3 next](https://img.shields.io/badge/phase-3%20workspace-00a8ff)
+![v0.7](https://img.shields.io/badge/version-0.7-blue)
 
-## Features (v0.4)
+## Features (v0.7)
 
-- Connect to Grok Build (`grok agent stdio`) with SuperGrok Heavy
+- Connect to Grok Build (`grok agent stdio`) with SuperGrok Heavy (via CLI cached auth)
 - **Multi-session mission control** — parallel tabs on one agent process
 - Resume recent work from `~/.grok/sessions` (Recents)
-- **Plan pane** — live checklist; Enter plan mode · Approve · Revise
-- **Diff pane** — git status/diff in session cwd; click `+` lines to leave review notes
+- **Plan pane** — live checklist; Enter plan mode · Approve · Revise (real `exit_plan_mode` handshake)
+- **Diff pane** — git status/diff; auto-refresh after file-mutating tools; click `+` lines for review notes
 - Review notes inject into the next prompt automatically
-- Stream chat / thoughts / tools (thoughts collapsed + size-capped to avoid freezes)
-- Permission cards, cancel turn, light markdown
+- Stream chat / thoughts / tools (thoughts collapsed + size-capped)
+- Image paste into prompts; rich markdown for assistant replies
+- Permission cards, **Stop unlocks UI**, stall recovery banner on long quiet periods
+- Long agent turns supported (prompt RPC wait is hours, not 5 minutes)
 
 ## Requirements
 
@@ -39,8 +42,8 @@ npm run tauri dev
 ```
 
 1. Click **Connect to Grok**
-2. Set a project folder path
-3. **New session here**
+2. Pick a project folder (`…`)
+3. **+ New session**
 4. Prompt
 
 ## Project layout
@@ -51,12 +54,14 @@ grok-desk/
 ├── src-tauri/           # Rust: ACP bridge + Tauri commands
 ├── ARCHITECTURE.md
 ├── ROADMAP.md
-└── AGENTS.md
+└── AGENTS.md            # Instructions for coding agents working on this repo
 ```
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md). Next: multi-session mission control, diffs, plan pane.
+See [ROADMAP.md](./ROADMAP.md). **Phases 0–2 done.** Next: Phase 3 (workspace: terminal, permission modes, model/effort picker).
+
+**Deferred:** phone remote / GrokLink — build the PC product first.
 
 ## Not affiliated with xAI
 

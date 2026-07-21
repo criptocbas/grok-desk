@@ -1,5 +1,9 @@
 # Grok Desk — Roadmap
 
+**Current version:** 0.7.x  
+**Current phase focus:** Phase 3 — Workspace  
+**Explicitly deferred:** GrokLink / phone remote commander (PC product first)
+
 ## Phase 0 — ACP spike ✅
 
 - [x] Scaffold Tauri 2 + React + TS + Tailwind
@@ -12,7 +16,7 @@
 - [x] Fix doubled streaming text (duplicate listeners)
 - [x] Fix tool reliability (agent-local FS/shell)
 
-## Phase 1 — Mission control ✅ (current)
+## Phase 1 — Mission control ✅
 
 - [x] Multi-session sidebar (parallel open tabs on one agent process)
 - [x] Per-session transcript / tools / permissions / busy state
@@ -23,7 +27,7 @@
 - [ ] OS notifications when a background session finishes (nice-to-have)
 - [ ] Worktree-per-session toggle
 
-## Phase 2 — Review loop
+## Phase 2 — Review loop ✅
 
 - [x] Plan pane (ACP `plan` + `todo_write` checklist)
 - [x] Plan mode indicator + Enter plan mode / Approve / Revise
@@ -35,13 +39,17 @@
 - [x] Auto Diff refresh after mutating tools (debounced)
 - [x] Long prompt timeout (6h) — no more 5‑min freeze on Heavy runs
 - [x] Stop unlocks UI immediately + stall banner with Unlock
+- [x] Richer markdown, plan expand, image paste
 
-## Phase 3 — Workspace
+## Phase 3 — Workspace ← **next**
 
+Priority order is flexible; pick with the user:
+
+- [ ] Model + effort picker (surface agent model state if available)
+- [ ] Permission modes (ask / always-approve for the session)
+- [ ] OS notifications when a background session finishes
 - [ ] Embedded terminal (PTY in project cwd)
 - [ ] File tree + open in external editor
-- [ ] Permission modes (ask / always-approve)
-- [ ] Model + effort picker
 
 ## Phase 4 — Ship loop
 
@@ -58,6 +66,11 @@
 
 - [ ] Dev-server detection + browser/webview pane
 - [ ] Screenshot verify loop via Grok vision
+
+## Later / maybe
+
+- [ ] GrokLink Remote Commander (phone control, pairing, E2EE) — **not** next
+- [ ] Worktree-per-session toggle (also listed under Phase 1 nice-to-have)
 
 ## Non-goals (for now)
 

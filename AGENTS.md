@@ -2,7 +2,9 @@
 
 ## What this is
 
-Desktop shell for Grok Build. UI in React/Tauri; agent runtime is the official `grok` CLI via ACP.
+Desktop shell for Grok Build. UI in React/Tauri; agent runtime is the official `grok` CLI via ACP (`grok agent stdio`). SuperGrok Heavy works through `~/.grok/auth.json` (`cached_token`).
+
+**Version:** 0.7.x · **Phases 0–2 complete** · Next is Phase 3 (see `ROADMAP.md`).
 
 ## Rules
 
@@ -11,6 +13,20 @@ Desktop shell for Grok Build. UI in React/Tauri; agent runtime is the official `
 3. Do not commit secrets or dump `~/.grok/auth.json`.
 4. Phase scope lives in `ROADMAP.md` — finish the current phase before expanding.
 5. After ACP protocol changes, smoke-test with a real `session/prompt` against a temp directory.
+6. **Do not build GrokLink / phone remote** unless the user explicitly asks — deferred; PC product first.
+7. **Never `cargo clean` lightly** if that would discard identity you care about; prefer targeted rebuilds.
+8. Avoid approving long self-edit plans that rewrite Desk from inside Desk without a clear scope (past OOM/crash risk on huge thought streams — caps exist but keep turns bounded).
+
+## Critical ACP / reliability notes (do not regress)
+
+| Topic | Correct behavior |
+|--------|------------------|
+| Client `fs` / `terminal` | Advertise **false**. Agent uses local tools. Enabling client FS broke `read_file` historically. |
+| Plan approval | Real handshake: agent reverse-request `x.ai/exit_plan_mode` → UI Approve/Revise/Abandon → `plan_approval_respond`. |
+| `session/prompt` wait | **Long timeout (6h)** in `acp.rs` — not 5 minutes. Short waits cause false "request timed out" mid Heavy runs. |
+| Diff pane | Auto-refresh (debounced) after mutating tools (`write`, `search_replace`, terminal, …); manual Refresh still available. |
+| Stop / stall | Cancel unlocks UI immediately; ~90s silence shows stall banner (Stop / Unlock UI / Refresh diffs). |
+| Thoughts | Hard-capped in UI (`MAX_THOUGHT_CHARS`) — unbounded streams OOM the webview. |
 
 ## Commands
 
@@ -27,6 +43,26 @@ npm run tauri build
 
 Requires: Rust, Node 20+, system WebKitGTK (Linux), `grok` on PATH.
 
-## Architecture
+## Layout
 
-See `ARCHITECTURE.md`.
+```
+src/App.tsx                 # Mission control UI (sessions, stream, send/cancel)
+src/components/PlanPane.tsx
+src/components/DiffPane.tsx
+src/components/RichText.tsx
+src-tauri/src/acp.rs        # ACP JSON-RPC bridge
+src-tauri/src/git.rs        # git status / diff for Diff pane
+src-tauri/src/lib.rs        # Tauri commands
+```
+
+## Docs for agents
+
+| File | Use for |
+|------|---------|
+| `ROADMAP.md` | What's done vs next phase |
+| `ARCHITECTURE.md` | Process model, events, commands |
+| `README.md` | User-facing features + quick start |
+
+## Suggested first turn in a new session
+
+Orient only: read `ROADMAP.md` + recent commits; propose 2–3 Phase 3 options; **wait for user pick** before implementing.
