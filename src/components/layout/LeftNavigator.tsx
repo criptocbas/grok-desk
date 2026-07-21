@@ -830,8 +830,12 @@ function SessionRow({
 
   return (
     <li>
+      {/*
+        Actions are position:absolute so opacity-0 controls don’t reserve
+        flex width (group select alone was ~4.5rem of “empty” space).
+      */}
       <div
-        className={`group flex w-full items-start gap-1 rounded-lg px-1 py-1 transition ${
+        className={`group relative flex w-full items-start rounded-lg px-1 py-1 transition ${
           selected
             ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
             : "hover:bg-[var(--bg-hover)]"
@@ -842,7 +846,7 @@ function SessionRow({
           onClick={() => onSelectSession(s.sessionId, s.cwd)}
           aria-current={selected ? "true" : undefined}
           aria-label={`${s.title}, ${statusLabel}`}
-          className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-1.5 py-1 text-left"
+          className="flex min-w-0 w-full items-start gap-2 rounded-md px-1.5 py-1 pr-7 text-left"
         >
           <span
             className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -858,10 +862,10 @@ function SessionRow({
             aria-hidden
           />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1 truncate text-[11px] font-medium">
+            <div className="flex min-w-0 items-center gap-1 text-[11px] font-medium">
               {pinned && (
                 <span
-                  className="text-[10px] text-[var(--accent)]"
+                  className="shrink-0 text-[10px] text-[var(--accent)]"
                   title="Pinned"
                   aria-hidden
                 >
@@ -870,7 +874,7 @@ function SessionRow({
               )}
               <SessionTitleLabel
                 title={s.title}
-                className="text-[11px] font-medium"
+                className="min-w-0 flex-1 text-[11px] font-medium"
                 onRename={(next) => onRenameSession(s.sessionId, next)}
               />
             </div>
@@ -890,51 +894,55 @@ function SessionRow({
             </div>
           </div>
         </button>
-        {groups.length > 0 && (
-          <select
-            title="Move to group"
-            aria-label="Move session to group"
-            value={groupId ?? ""}
-            onChange={(e) => {
-              const v = e.target.value;
-              onSetSessionGroup(s.sessionId, v === "" ? null : v);
+        <div
+          className="pointer-events-none absolute top-0.5 right-0.5 z-10 flex items-start gap-0.5 rounded-md bg-[var(--bg-panel)]/95 py-0.5 pl-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+        >
+          {groups.length > 0 && (
+            <select
+              title="Move to group"
+              aria-label="Move session to group"
+              value={groupId ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onSetSessionGroup(s.sessionId, v === "" ? null : v);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-[5.5rem] rounded border border-transparent bg-transparent py-0.5 text-[10px] text-[var(--text-faint)] hover:border-[var(--border)]"
+            >
+              <option value="">—</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            title={pinned ? "Unpin" : "Pin (keep after restart)"}
+            aria-label={pinned ? "Unpin session" : "Pin session"}
+            onClick={() => {
+              if (pinned) void onUnpin(s.sessionId, s.cwd);
+              else void onPin(s.sessionId, s.cwd, s.title);
             }}
-            onClick={(e) => e.stopPropagation()}
-            className="mt-1 max-w-[4.5rem] shrink-0 rounded border border-transparent bg-transparent py-0.5 text-[10px] text-[var(--text-faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:border-[var(--border)]"
+            className={`rounded px-1.5 py-0.5 text-[11px] ${
+              pinned
+                ? "text-[var(--accent)]"
+                : "text-[var(--text-faint)] hover:text-[var(--accent)]"
+            }`}
           >
-            <option value="">—</option>
-            {groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
-        )}
-        <button
-          type="button"
-          title={pinned ? "Unpin" : "Pin (keep after restart)"}
-          aria-label={pinned ? "Unpin session" : "Pin session"}
-          onClick={() => {
-            if (pinned) void onUnpin(s.sessionId, s.cwd);
-            else void onPin(s.sessionId, s.cwd, s.title);
-          }}
-          className={`mt-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 ${
-            pinned
-              ? "text-[var(--accent)] opacity-100"
-              : "text-[var(--text-faint)] hover:text-[var(--accent)]"
-          }`}
-        >
-          📌
-        </button>
-        <button
-          type="button"
-          title="Close tab"
-          aria-label="Close session"
-          onClick={() => onCloseSession(s.sessionId)}
-          className="mt-1 shrink-0 rounded px-1.5 py-0.5 text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--danger)] group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          ×
-        </button>
+            📌
+          </button>
+          <button
+            type="button"
+            title="Close tab"
+            aria-label="Close session"
+            onClick={() => onCloseSession(s.sessionId)}
+            className="rounded px-1.5 py-0.5 text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--danger)]"
+          >
+            ×
+          </button>
+        </div>
       </div>
     </li>
   );
