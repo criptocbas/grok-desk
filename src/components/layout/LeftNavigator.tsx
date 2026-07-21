@@ -7,6 +7,7 @@ import type {
 } from "../../types";
 import {
   countRunningBackground,
+  countRunningSubagents,
   countRunningTools,
 } from "../../activity";
 import { folderName, formatTime, shortId } from "../../lib/format";
@@ -204,6 +205,9 @@ export function LeftNavigator({
           {sessions.map((s) => {
             const selected = s.sessionId === activeId;
             const run = countRunningTools(s.tools);
+            const sub = countRunningSubagents(s.subagents ?? []);
+            const bg = countRunningBackground(s.backgroundTasks ?? []);
+            const live = run > 0 || sub > 0 || bg > 0;
             return (
               <button
                 key={s.sessionId}
@@ -217,7 +221,7 @@ export function LeftNavigator({
                 }`}
               >
                 {(s.title || folderName(s.cwd)).slice(0, 1).toUpperCase()}
-                {s.busy || run > 0 ? (
+                {s.busy || live ? (
                   <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--warning)]" />
                 ) : isPinned(s.sessionId, s.cwd) ? (
                   <span className="absolute bottom-0.5 right-0.5 text-[7px] text-[var(--accent)]">
@@ -753,11 +757,25 @@ export function LeftNavigator({
       </div>
 
       {/* Live status chip — full Activity lives in the right utility rail */}
-      {active && (active.busy || countRunningTools(active.tools) > 0) && (
+      {active &&
+        (active.busy ||
+          countRunningTools(active.tools) > 0 ||
+          countRunningBackground(active.backgroundTasks ?? []) > 0 ||
+          countRunningSubagents(active.subagents ?? []) > 0) && (
         <div className="border-t border-[var(--border)] px-3 py-2 text-[10px] text-[var(--warning)]">
-          {active.busy ? "Turn running" : "Tools active"}
+          {active.busy
+            ? "Turn running"
+            : countRunningSubagents(active.subagents ?? []) > 0
+              ? "Watching"
+              : "Tools active"}
+          {countRunningSubagents(active.subagents ?? []) > 0
+            ? ` · ${countRunningSubagents(active.subagents ?? [])} sub`
+            : ""}
           {countRunningTools(active.tools) > 0
             ? ` · ${countRunningTools(active.tools)} tool${countRunningTools(active.tools) === 1 ? "" : "s"}`
+            : ""}
+          {countRunningBackground(active.backgroundTasks ?? []) > 0
+            ? ` · ${countRunningBackground(active.backgroundTasks ?? [])} bg`
             : ""}
           <span className="text-[var(--text-faint)]"> · Alt+A</span>
         </div>
@@ -861,6 +879,8 @@ function SessionRow({
               {(() => {
                 const run = countRunningTools(s.tools);
                 const bg = countRunningBackground(s.backgroundTasks ?? []);
+                const sub = countRunningSubagents(s.subagents ?? []);
+                if (sub > 0) return ` · ${sub} sub`;
                 if (run > 0) return ` · ${run} run`;
                 if (bg > 0) return ` · ${bg} bg`;
                 if (s.plan.length > 0)

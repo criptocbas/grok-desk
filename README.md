@@ -16,7 +16,8 @@ Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://ag
 - **Permission modes** — Ask vs Always-approve per tab (auto-allows tool prompts)
 - **OS notifications** when a background tab finishes a turn or needs permission
 - **Slash / skill palette** — type `/` to browse agent commands and skills
-- **Activity feed** — running tools, subagents, background tasks with durations
+- **Activity feed** — first-class subagents (`subagent_spawned` / `finished`), tools, and background tasks with durations
+- **Watching strip** — stays visible when child agents or bg tasks run after the parent turn ends
 - **Pinned sessions** — bookmark conversations; auto-resume on Connect after restart
 - **Plan pane** — live checklist; Enter plan mode · Approve · Revise (real `exit_plan_mode` handshake)
 - **Diff pane** — git status/diff; auto-refresh after file-mutating tools; click `+` lines for review notes

@@ -44,11 +44,18 @@ import {
 import { SettingsPane } from "./components/settings/SettingsPane";
 import {
   countRunningBackground,
+  countRunningSubagents,
   countRunningTools,
+  formatDuration,
+  isSpawnSubagentTool,
+  isSubagentDone,
   isToolDone,
+  parseSubagentFinished,
+  parseSubagentSpawned,
   parseTaskBackgrounded,
   parseTaskCompleted,
   upsertBackgroundTask,
+  upsertSubagent,
   upsertToolCall,
 } from "./activity";
 import {
@@ -75,6 +82,7 @@ import {
 import { MessageBubble } from "./components/chat/MessageBubble";
 import { StallBanner } from "./components/chat/StallBanner";
 import { PermissionBanner } from "./components/chat/PermissionBanner";
+import { WatchingBanner } from "./components/chat/WatchingBanner";
 import { Composer } from "./components/chat/Composer";
 import { Titlebar } from "./components/layout/Titlebar";
 import { UpdateBanner } from "./components/layout/UpdateBanner";
@@ -906,6 +914,7 @@ export default function App() {
         const title = tool?.title || "tool";
         const status = tool?.status || "in_progress";
         const kindStr = tool?.kind;
+        const skipTranscriptTool = isSpawnSubagentTool(tool?.name, title);
 
         if (!id && kind === "tool_call_update") return;
 
@@ -914,6 +923,14 @@ export default function App() {
           const t = nextTools.find((x) => x.id === id);
           const tTitle = t?.title || title;
           const tStatus = t?.status || status;
+          // spawn_subagent lifecycle lives in role:"subagent" cards — skip tool spam
+          if (skipTranscriptTool || isSpawnSubagentTool(t?.name, tTitle)) {
+            return {
+              ...s,
+              tools: nextTools,
+              plan: planFromTool ?? s.plan,
+            };
+          }
           const items = s.items.some((i) => i.id === `tool-${id}`)
             ? s.items.map((i) =>
                 i.id === `tool-${id}`
@@ -941,6 +958,120 @@ export default function App() {
         });
         if (isToolDone(status) && isMutatingTool(title, kindStr)) {
           scheduleGitRefresh(sessionId);
+        }
+      } else if (kind === "subagent_spawned") {
+        const spawned = parseSubagentSpawned(update, Date.now());
+        if (!spawned) return;
+        setInspectorTab((t) => t ?? "activity");
+        patchSession(sessionId, (s) => {
+          const subagents = upsertSubagent(s.subagents ?? [], spawned);
+          const cardId = `subagent-${spawned.subagentId}`;
+          const metaParts = [
+            "running",
+            spawned.subagentType,
+            spawned.model,
+            spawned.contextSource === "resumed" || spawned.resumedFrom
+              ? "resumed"
+              : null,
+          ].filter(Boolean);
+          const meta = metaParts.join(" · ");
+          const items = s.items.some((i) => i.id === cardId)
+            ? s.items.map((i) =>
+                i.id === cardId
+                  ? {
+                      ...i,
+                      text: spawned.description,
+                      meta,
+                      status: "running",
+                      subagentId: spawned.subagentId,
+                    }
+                  : i,
+              )
+            : [
+                ...s.items,
+                {
+                  id: cardId,
+                  role: "subagent" as const,
+                  text: spawned.description,
+                  meta,
+                  status: "running",
+                  subagentId: spawned.subagentId,
+                },
+              ];
+          return { ...s, subagents, items };
+        });
+      } else if (kind === "subagent_finished") {
+        const fin = parseSubagentFinished(update, Date.now());
+        if (!fin) return;
+        let finishedDesc = "Subagent";
+        patchSession(sessionId, (s) => {
+          const subagents = upsertSubagent(s.subagents ?? [], fin);
+          const row = subagents.find((x) => x.subagentId === fin.subagentId);
+          finishedDesc = row?.description || finishedDesc;
+          const st = row?.status || fin.status || "completed";
+          const dur =
+            row?.durationMs != null
+              ? formatDuration(row.durationMs)
+              : row?.startedAt != null && row?.endedAt != null
+                ? formatDuration(row.endedAt - row.startedAt)
+                : "";
+          const metaParts = [
+            st,
+            dur || null,
+            row?.toolCalls != null ? `${row.toolCalls} tools` : null,
+          ].filter(Boolean);
+          const cardId = `subagent-${fin.subagentId}`;
+          const items = s.items.some((i) => i.id === cardId)
+            ? s.items.map((i) =>
+                i.id === cardId
+                  ? {
+                      ...i,
+                      text: row?.description || i.text,
+                      meta: metaParts.join(" · "),
+                      status: st,
+                      subagentId: fin.subagentId,
+                    }
+                  : i,
+              )
+            : [
+                ...s.items,
+                {
+                  id: cardId,
+                  role: "subagent" as const,
+                  text: row?.description || "Subagent",
+                  meta: metaParts.join(" · "),
+                  status: st,
+                  subagentId: fin.subagentId,
+                },
+              ];
+          // Mark linked spawn tool done if we can match by category
+          let tools = s.tools;
+          if (row?.toolCallId) {
+            tools = tools.map((t) =>
+              t.id === row.toolCallId
+                ? {
+                    ...t,
+                    status: isSubagentDone(st)
+                      ? st === "failed"
+                        ? "failed"
+                        : "completed"
+                      : t.status,
+                    endedAt: row.endedAt ?? Date.now(),
+                    category: "subagent" as const,
+                  }
+                : t,
+            );
+          }
+          return { ...s, subagents, items, tools };
+        });
+        if (sessionId !== activeIdRef.current) {
+          const title =
+            sessionsRef.current.find((s) => s.sessionId === sessionId)?.title ||
+            shortId(sessionId);
+          notifyOs(
+            "Grok Desk · subagent finished",
+            `${finishedDesc} · ${title}`,
+          );
         }
       } else if (kind === "task_backgrounded") {
         const task = parseTaskBackgrounded(update, Date.now());
@@ -1217,6 +1348,7 @@ export default function App() {
         ],
         tools: [],
         backgroundTasks: [],
+        subagents: [],
         permissions: [],
         busy: false,
         createdAt: Date.now(),
@@ -1300,6 +1432,7 @@ export default function App() {
           ],
           tools: [],
           backgroundTasks: [],
+          subagents: [],
           permissions: [],
           busy: true,
           createdAt: Date.now(),
@@ -2215,12 +2348,21 @@ export default function App() {
       : (active?.reviewComments?.length ?? 0) > 0
         ? String(active!.reviewComments.length)
         : null;
+  const subRunning = active
+    ? countRunningSubagents(active.subagents ?? [])
+    : 0;
+  const bgRunning = active
+    ? countRunningBackground(active.backgroundTasks ?? [])
+    : 0;
   const activityLive = active
-    ? countRunningTools(active.tools) +
-      countRunningBackground(active.backgroundTasks ?? [])
+    ? countRunningTools(active.tools) + bgRunning + subRunning
     : 0;
   const activityBadge =
     activityLive > 0 ? String(activityLive) : active?.busy ? "…" : null;
+  const watching =
+    !!active &&
+    (subRunning > 0 || bgRunning > 0) &&
+    (!active.busy || subRunning > 0 || bgRunning > 0);
   // stickTick forces re-render when the user pins/unpins auto-scroll.
   const showJumpToLatest =
     !!active && stickTick >= 0 && !isStuckToBottom(active.sessionId);
@@ -2636,6 +2778,14 @@ export default function App() {
                   </div>
                 )}
 
+                {watching && (
+                  <WatchingBanner
+                    subagentCount={subRunning}
+                    backgroundCount={bgRunning}
+                    onOpenActivity={() => setInspectorTab("activity")}
+                  />
+                )}
+
                 <Composer
                   busy={active.busy}
                   prompt={prompt}
@@ -2771,6 +2921,7 @@ export default function App() {
                   embedded
                   tools={active.tools}
                   backgroundTasks={active.backgroundTasks ?? []}
+                  subagents={active.subagents ?? []}
                   busy={active.busy}
                 />
               )}

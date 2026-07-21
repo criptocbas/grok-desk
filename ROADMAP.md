@@ -63,6 +63,8 @@ Priority order is flexible; pick with the user:
 - [ ] File tree + open in external editor
 - [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
 - [x] Richer tool / subagent / background-task presentation (Activity pane + task_* events)
+- [x] First-class subagents: `subagent_spawned` / `subagent_finished`, Activity section, transcript cards, watching strip (Tier 1)
+- [ ] Subagent Tier 2: disk meta hydrate + read-only child inspector
 - [x] Desktop install (user-local `.desktop` for Super+Space) + in-app update check / rebuild
 
 ## Phase 4 — Ship loop

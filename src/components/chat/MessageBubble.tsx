@@ -26,6 +26,58 @@ export function MessageBubble({ item }: { item: ChatItem }) {
       </details>
     );
   }
+  if (item.role === "subagent") {
+    const st = (item.status || item.meta || "").toLowerCase();
+    const running =
+      st.includes("running") ||
+      st.includes("in_progress") ||
+      st === "pending";
+    const failed = st.includes("fail") || st.includes("error");
+    const done =
+      st.includes("completed") ||
+      st.includes("success") ||
+      st.includes("done") ||
+      st.includes("cancel");
+    const border = failed
+      ? "border-[var(--danger)]/30 bg-[var(--danger)]/5"
+      : running
+        ? "border-[var(--thought)]/30 bg-[var(--thought)]/8"
+        : "border-[var(--thought)]/18 bg-[var(--thought)]/5";
+    const statusColor = failed
+      ? "text-[var(--danger)]"
+      : running
+        ? "text-[var(--warning)]"
+        : done
+          ? "text-[var(--success)]"
+          : "text-[var(--text-muted)]";
+
+    return (
+      <div
+        data-subagent-id={item.subagentId}
+        className={`rounded-xl border px-3 py-2 text-[12px] ${border}`}
+      >
+        <div className="flex items-center gap-2">
+          <span className="mono shrink-0 rounded bg-[var(--thought)]/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[var(--thought)]">
+            sub
+          </span>
+          <span className="min-w-0 flex-1 truncate font-medium text-[var(--text)]">
+            {item.text || "Subagent"}
+          </span>
+          {item.meta && (
+            <span className={`mono shrink-0 text-[10px] ${statusColor}`}>
+              {item.meta}
+            </span>
+          )}
+          {running && (
+            <span
+              className="status-pulse h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--warning)]"
+              aria-hidden
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
   if (item.role === "tool") {
     const st = (item.meta || item.status || "").toLowerCase();
     return (

@@ -104,7 +104,13 @@ export type PermissionRequest = {
   raw: unknown;
 };
 
-export type ChatRole = "user" | "assistant" | "system" | "thought" | "tool";
+export type ChatRole =
+  | "user"
+  | "assistant"
+  | "system"
+  | "thought"
+  | "tool"
+  | "subagent";
 
 export type ChatItem = {
   id: string;
@@ -112,6 +118,8 @@ export type ChatItem = {
   text: string;
   meta?: string;
   status?: string;
+  /** For role "subagent" lifecycle cards */
+  subagentId?: string;
 };
 
 export type ToolCallItem = {
@@ -134,7 +142,7 @@ export type ToolCallItem = {
   raw?: unknown;
 };
 
-/** Long-running shell/subagent work advertised via task_backgrounded / task_completed. */
+/** Long-running shell work advertised via task_backgrounded / task_completed. */
 export type BackgroundTaskItem = {
   taskId: string;
   toolCallId?: string;
@@ -147,6 +155,40 @@ export type BackgroundTaskItem = {
   endedAt?: number;
   /** Truncated exit summary only (≤300 chars) */
   summary?: string;
+};
+
+export type SubagentStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+/**
+ * First-class child agent from ACP `subagent_spawned` / `subagent_finished`.
+ * Not a tool row — separate lifecycle and IDs.
+ */
+export type SubagentItem = {
+  subagentId: string;
+  childSessionId?: string;
+  parentSessionId?: string;
+  /** Best-effort link to spawn tool_call */
+  toolCallId?: string;
+  description: string;
+  subagentType?: string;
+  model?: string;
+  status: SubagentStatus;
+  /** new | resumed | … */
+  contextSource?: string;
+  resumedFrom?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  toolCalls?: number;
+  turns?: number;
+  tokensUsed?: number;
+  /** Truncated finish summary (≤ SUMMARY_MAX) */
+  outputSummary?: string;
 };
 
 export type PlanEntryStatus = "pending" | "in_progress" | "completed" | string;
@@ -202,6 +244,8 @@ export type DeskSession = {
   tools: ToolCallItem[];
   /** Background shell / task_id work for this session. */
   backgroundTasks: BackgroundTaskItem[];
+  /** Child agents (subagent_spawned / subagent_finished). */
+  subagents: SubagentItem[];
   permissions: PermissionRequest[];
   busy: boolean;
   createdAt: number;

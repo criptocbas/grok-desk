@@ -32,7 +32,8 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 - **Model / effort** via ACP `session/set_model` (optional `_meta.reasoningEffort`). Catalog from `session/new` / initialize `_meta.modelState`.
 - **Permission mode** is a Desk per-tab policy: `always-approve` auto-answers `session/request_permission` with an allow option (agent still enforces deny rules/hooks).
 - **Background notifications** via `notify-send` when a non-active tab finishes a turn or needs permission.
-- **Activity feed** derives from `tool_call` / `tool_call_update` plus Grok extensions `task_backgrounded` / `task_completed` (and defensive `turn_completed`). Caps tool history; never stores full terminal logs in the UI.
+- **Activity feed** derives from `tool_call` / `tool_call_update` plus Grok extensions `task_backgrounded` / `task_completed`, and **first-class subagents** via `subagent_spawned` / `subagent_finished` (plus defensive `turn_completed`). Caps tool/subagent history; never stores full terminal logs or child thoughts in the UI.
+- **Watching strip** appears above the composer when subagents or background tasks still run (including after the parent turn ends).
 - **Pinned sessions** are Desk UI bookmarks (not Grok session storage). Content still resumes via `session/load` from `~/.grok/sessions`.
 
 ### Client capabilities (tools)
@@ -127,7 +128,8 @@ LeftNavigator | Workbench (chrome · transcript · composer) | Utility rail
 | `src/components/session/*` | Session chrome (model/effort/perms) |
 | `src/components/PlanPane.tsx` | Plan checklist + approval actions |
 | `src/components/DiffPane.tsx` | Diff + line comments |
-| `src/components/ActivityPane.tsx` | Tools / background tasks |
+| `src/components/ActivityPane.tsx` | Subagents / tools / background tasks |
+| `src/components/chat/WatchingBanner.tsx` | Idle-but-watching strip (live children) |
 | `src/components/RichText.tsx` | Assistant markdown |
 
 ## Reference

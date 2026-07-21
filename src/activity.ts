@@ -1,7 +1,13 @@
-import type { BackgroundTaskItem, ToolCallItem } from "./types";
+import type {
+  BackgroundTaskItem,
+  SubagentItem,
+  SubagentStatus,
+  ToolCallItem,
+} from "./types";
 
 export const MAX_TOOLS = 100;
 export const MAX_BACKGROUND_TASKS = 40;
+export const MAX_SUBAGENTS = 40;
 export const DETAIL_MAX = 200;
 export const SUMMARY_MAX = 300;
 
@@ -341,6 +347,193 @@ export function countRunningTools(tools: ToolCallItem[]): number {
 
 export function countRunningBackground(tasks: BackgroundTaskItem[]): number {
   return tasks.filter((t) => t.status === "running").length;
+}
+
+export function normalizeSubagentStatus(
+  status: string | undefined | null,
+): SubagentStatus {
+  const s = (status || "").toLowerCase();
+  if (s === "completed" || s === "success" || s === "done") return "completed";
+  if (s === "failed" || s === "error") return "failed";
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  if (s === "running" || s === "in_progress" || s === "pending") return "running";
+  if (!s) return "running";
+  return "unknown";
+}
+
+export function isSubagentRunning(status: SubagentStatus | string): boolean {
+  return normalizeSubagentStatus(status) === "running";
+}
+
+export function isSubagentDone(status: SubagentStatus | string): boolean {
+  const s = normalizeSubagentStatus(status);
+  return s === "completed" || s === "failed" || s === "cancelled";
+}
+
+export function countRunningSubagents(list: SubagentItem[]): number {
+  return list.filter((s) => isSubagentRunning(s.status)).length;
+}
+
+export function upsertSubagent(
+  list: SubagentItem[],
+  patch: Partial<SubagentItem> & { subagentId: string },
+): SubagentItem[] {
+  const prev = list.find((s) => s.subagentId === patch.subagentId);
+  const status = patch.status ?? prev?.status ?? "running";
+  const next: SubagentItem = {
+    subagentId: patch.subagentId,
+    childSessionId: patch.childSessionId ?? prev?.childSessionId,
+    parentSessionId: patch.parentSessionId ?? prev?.parentSessionId,
+    toolCallId: patch.toolCallId ?? prev?.toolCallId,
+    description:
+      (patch.description
+        ? truncate(patch.description, DETAIL_MAX)
+        : undefined) ||
+      prev?.description ||
+      "Subagent",
+    subagentType: patch.subagentType ?? prev?.subagentType,
+    model: patch.model ?? prev?.model,
+    status,
+    contextSource: patch.contextSource ?? prev?.contextSource,
+    resumedFrom: patch.resumedFrom ?? prev?.resumedFrom,
+    startedAt: patch.startedAt ?? prev?.startedAt ?? Date.now(),
+    endedAt: patch.endedAt ?? prev?.endedAt,
+    durationMs: patch.durationMs ?? prev?.durationMs,
+    toolCalls: patch.toolCalls ?? prev?.toolCalls,
+    turns: patch.turns ?? prev?.turns,
+    tokensUsed: patch.tokensUsed ?? prev?.tokensUsed,
+    outputSummary: patch.outputSummary
+      ? truncate(patch.outputSummary, SUMMARY_MAX)
+      : prev?.outputSummary,
+  };
+  const rest = list.filter((s) => s.subagentId !== patch.subagentId);
+  const out = [...rest, next];
+  return out.length > MAX_SUBAGENTS ? out.slice(-MAX_SUBAGENTS) : out;
+}
+
+export function parseSubagentSpawned(
+  update: Record<string, unknown>,
+  now = Date.now(),
+): SubagentItem | null {
+  const subagentId =
+    (typeof update.subagent_id === "string" && update.subagent_id) ||
+    (typeof update.subagentId === "string" && update.subagentId) ||
+    "";
+  if (!subagentId) return null;
+
+  const description =
+    (typeof update.description === "string" && update.description) ||
+    "Subagent";
+
+  return {
+    subagentId,
+    childSessionId:
+      (typeof update.child_session_id === "string" &&
+        update.child_session_id) ||
+      (typeof update.childSessionId === "string" && update.childSessionId) ||
+      subagentId,
+    parentSessionId:
+      (typeof update.parent_session_id === "string" &&
+        update.parent_session_id) ||
+      (typeof update.parentSessionId === "string" && update.parentSessionId) ||
+      undefined,
+    description: truncate(description, DETAIL_MAX),
+    subagentType:
+      (typeof update.subagent_type === "string" && update.subagent_type) ||
+      (typeof update.subagentType === "string" && update.subagentType) ||
+      undefined,
+    model:
+      (typeof update.model === "string" && update.model) ||
+      (typeof update.effective_model_id === "string" &&
+        update.effective_model_id) ||
+      undefined,
+    status: "running",
+    contextSource:
+      (typeof update.effective_context_source === "string" &&
+        update.effective_context_source) ||
+      (typeof update.effectiveContextSource === "string" &&
+        update.effectiveContextSource) ||
+      undefined,
+    resumedFrom:
+      (typeof update.resumed_from === "string" && update.resumed_from) ||
+      (typeof update.resumedFrom === "string" && update.resumedFrom) ||
+      undefined,
+    startedAt: now,
+  };
+}
+
+export function parseSubagentFinished(
+  update: Record<string, unknown>,
+  now = Date.now(),
+): (Partial<SubagentItem> & { subagentId: string }) | null {
+  const subagentId =
+    (typeof update.subagent_id === "string" && update.subagent_id) ||
+    (typeof update.subagentId === "string" && update.subagentId) ||
+    "";
+  if (!subagentId) return null;
+
+  const status = normalizeSubagentStatus(
+    typeof update.status === "string" ? update.status : "completed",
+  );
+
+  let durationMs: number | undefined;
+  if (typeof update.duration_ms === "number") durationMs = update.duration_ms;
+  else if (typeof update.durationMs === "number") durationMs = update.durationMs;
+
+  const endedAt =
+    durationMs != null && durationMs >= 0 ? now : now;
+
+  const output =
+    (typeof update.output === "string" && update.output) ||
+    (typeof update.summary === "string" && update.summary) ||
+    "";
+
+  return {
+    subagentId,
+    childSessionId:
+      (typeof update.child_session_id === "string" &&
+        update.child_session_id) ||
+      (typeof update.childSessionId === "string" && update.childSessionId) ||
+      undefined,
+    status: status === "running" ? "completed" : status,
+    endedAt,
+    durationMs,
+    toolCalls:
+      typeof update.tool_calls === "number"
+        ? update.tool_calls
+        : typeof update.toolCalls === "number"
+          ? update.toolCalls
+          : undefined,
+    turns:
+      typeof update.turns === "number" ? update.turns : undefined,
+    tokensUsed:
+      typeof update.tokens_used === "number"
+        ? update.tokens_used
+        : typeof update.tokensUsed === "number"
+          ? update.tokensUsed
+          : undefined,
+    outputSummary: output ? truncate(output, SUMMARY_MAX) : undefined,
+  };
+}
+
+/** True if this tool call is a spawn_subagent (skip chat spam when lifecycle card exists). */
+export function isSpawnSubagentTool(
+  name?: string,
+  title?: string,
+): boolean {
+  const s = `${name || ""} ${title || ""}`.toLowerCase();
+  return s.includes("spawn_subagent");
+}
+
+/** Short type label for chips. */
+export function subagentTypeChip(type?: string): string {
+  const t = (type || "").toLowerCase();
+  if (t === "explore") return "explore";
+  if (t === "plan") return "plan";
+  if (t === "general-purpose" || t === "general") return "gen";
+  if (t.length > 0 && t.length <= 8) return t;
+  if (t) return t.slice(0, 6);
+  return "sub";
 }
 
 export function kindAccentClass(kind?: string, category?: string): string {
