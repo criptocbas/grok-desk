@@ -1,4 +1,4 @@
-import type { AgentInfo, GrokStatus } from "../../types";
+import type { AgentInfo, AppVersionInfo, GrokStatus } from "../../types";
 
 type Props = {
   running: boolean;
@@ -7,7 +7,10 @@ type Props = {
   activePermissionCount?: number;
   info: AgentInfo | null;
   grok: GrokStatus | null;
+  appVersion?: AppVersionInfo | null;
+  updateAvailable?: boolean;
   onShowShortcuts: () => void;
+  onOpenUpdates?: () => void;
 };
 
 export function Titlebar({
@@ -17,8 +20,13 @@ export function Titlebar({
   activePermissionCount,
   info,
   grok,
+  appVersion,
+  updateAvailable,
   onShowShortcuts,
+  onOpenUpdates,
 }: Props) {
+  const ver = appVersion?.version ?? "0.9";
+  const short = appVersion?.commitShort;
   return (
     <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2">
       <div className="flex items-center gap-2.5">
@@ -34,7 +42,8 @@ export function Titlebar({
             Grok Desk
           </span>
           <span className="text-[10px] text-[var(--text-faint)]">
-            v0.9 · mission control
+            v{ver}
+            {short ? ` · ${short}` : ""} · mission control
           </span>
         </div>
       </div>
@@ -66,6 +75,16 @@ export function Titlebar({
           <span className="mono hidden rounded-md bg-[var(--bg-panel)] px-2 py-0.5 text-[10px] xl:inline">
             {grok.version.replace(/^grok\s+/i, "")}
           </span>
+        )}
+        {updateAvailable && onOpenUpdates && (
+          <button
+            type="button"
+            onClick={onOpenUpdates}
+            className="rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20"
+            title="Update available"
+          >
+            Update
+          </button>
         )}
         <button
           type="button"

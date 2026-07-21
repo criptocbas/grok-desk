@@ -39,7 +39,7 @@ Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://ag
 # pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg
 ```
 
-## Quick start
+## Quick start (dev)
 
 ```bash
 cd grok-desk
@@ -51,6 +51,31 @@ npm run tauri dev
 2. Pick a project folder (`…`)
 3. **+ New session**
 4. Prompt
+
+## Install as a desktop app (Omarchy / Super+Space)
+
+User-local install — no root. Binary + `.desktop` entry so Walker/Super+Space finds **Grok Desk**.
+
+```bash
+# From the repo checkout
+npm run install:local
+# or: ./scripts/install-local.sh
+```
+
+Installs to:
+
+| What | Where |
+|------|--------|
+| Binary | `~/.local/bin/grok-desk` |
+| Desktop entry | `~/.local/share/applications/app.grokdesk.desktop` |
+| Install meta | `~/.local/share/grok-desk/install-meta.json` |
+
+### Updates
+
+- **In-app:** Settings → App & updates → *Check for updates* / *Update now* (pulls `main`, rebuilds, reinstalls in the background). Or use the top banner when a newer commit is on GitHub.
+- **CLI:** `npm run update:local` or `./scripts/install-local.sh --update`
+
+Requires the original git checkout path (stored in install-meta) and network for `git pull` + GitHub commit check.
 
 ## Project layout
 

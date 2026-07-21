@@ -250,3 +250,44 @@ export type ReviewComment = {
   /** Optional snippet of the line(s) being commented */
   snippet?: string | null;
 };
+
+/** From `app_version_info` — build + optional install-local.sh meta. */
+export type InstallMeta = {
+  version?: string | null;
+  commit?: string | null;
+  commitShort?: string | null;
+  branch?: string | null;
+  repoPath?: string | null;
+  installedAt?: string | null;
+  binaryPath?: string | null;
+  githubRepo?: string | null;
+  githubBranch?: string | null;
+};
+
+export type AppVersionInfo = {
+  version: string;
+  commit: string;
+  commitShort: string;
+  isInstalled: boolean;
+  installMeta?: InstallMeta | null;
+  repoPath?: string | null;
+};
+
+export type UpdateCheckResult = {
+  updateAvailable: boolean;
+  currentCommit: string;
+  currentCommitShort: string;
+  remoteCommit?: string | null;
+  remoteCommitShort?: string | null;
+  remoteMessage?: string | null;
+  githubRepo: string;
+  githubBranch: string;
+  error?: string | null;
+  canAutoUpdate: boolean;
+};
+
+export type UpdateStartResult = {
+  started: boolean;
+  message: string;
+  logPath?: string | null;
+};

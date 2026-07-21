@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "install:local": "bash scripts/install-local.sh",
+    "update:local": "bash scripts/install-local.sh --update"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

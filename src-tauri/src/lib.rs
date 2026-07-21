@@ -1,5 +1,6 @@
 mod acp;
 mod git;
+mod install;
 mod pins;
 mod session_groups;
 mod session_titles;
@@ -378,6 +379,28 @@ fn reorder_session_groups(group_ids: Vec<String>) -> Result<SessionGroupsState, 
     session_groups::reorder_session_groups(group_ids)
 }
 
+// ── Install / self-update ──────────────────────────────────────────────
+
+#[tauri::command]
+fn app_version_info() -> install::AppVersionInfo {
+    install::app_version_info()
+}
+
+#[tauri::command]
+fn check_for_updates() -> install::UpdateCheckResult {
+    install::check_for_updates()
+}
+
+#[tauri::command]
+fn start_self_update() -> Result<install::UpdateStartResult, String> {
+    install::start_self_update()
+}
+
+#[tauri::command]
+fn read_update_log(max_bytes: Option<usize>) -> Result<String, String> {
+    install::read_update_log(max_bytes.unwrap_or(12_000))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -422,6 +445,10 @@ pub fn run() {
             touch_session_ref,
             list_pinned_group_sessions,
             reorder_session_groups,
+            app_version_info,
+            check_for_updates,
+            start_self_update,
+            read_update_log,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AgentInfo,
+  AppVersionInfo,
   AvailableCommand,
   DeskSession,
   DiskSession,
@@ -26,6 +27,8 @@ import type {
   SessionPin,
   SessionGroupsState,
   GroupResumeTarget,
+  UpdateCheckResult,
+  UpdateStartResult,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
@@ -74,6 +77,7 @@ import { StallBanner } from "./components/chat/StallBanner";
 import { PermissionBanner } from "./components/chat/PermissionBanner";
 import { Composer } from "./components/chat/Composer";
 import { Titlebar } from "./components/layout/Titlebar";
+import { UpdateBanner } from "./components/layout/UpdateBanner";
 import { LeftNavigator } from "./components/layout/LeftNavigator";
 import { EmptyWorkbench } from "./components/layout/EmptyWorkbench";
 import { SessionChrome } from "./components/session/SessionChrome";
@@ -115,6 +119,13 @@ export default function App() {
   });
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  /** Desktop install version + GitHub update check. */
+  const [appVersion, setAppVersion] = useState<AppVersionInfo | null>(null);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(
+    null,
+  );
+  const [updating, setUpdating] = useState(false);
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
   const [gitPatch, setGitPatch] = useState("");
@@ -246,6 +257,46 @@ export default function App() {
     const t = setInterval(() => setClock(Date.now()), 5_000);
     return () => clearInterval(t);
   }, [active?.busy, active?.sessionId]);
+
+  const checkForUpdates = useCallback(async () => {
+    try {
+      const r = await invoke<UpdateCheckResult>("check_for_updates");
+      setUpdateCheck(r);
+      if (r.updateAvailable) setUpdateBannerDismissed(false);
+    } catch {
+      /* offline / curl missing — ignore silent check */
+    }
+  }, []);
+
+  const startAppUpdate = useCallback(async () => {
+    try {
+      const r = await invoke<UpdateStartResult>("start_self_update");
+      setUpdating(true);
+      setError(null);
+      if (r.message) {
+        /* surface in Settings log; also soft-notify */
+        void notifyOs("Grok Desk update", r.message.slice(0, 120));
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void invoke<AppVersionInfo>("app_version_info")
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+    // Check GitHub shortly after boot, then every 6h while the app is open.
+    const initial = window.setTimeout(() => void checkForUpdates(), 4_000);
+    const periodic = window.setInterval(
+      () => void checkForUpdates(),
+      6 * 60 * 60 * 1000,
+    );
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(periodic);
+    };
+  }, [checkForUpdates]);
 
   const patchSession = useCallback(
     (sessionId: string, fn: (s: DeskSession) => DeskSession) => {
@@ -2406,8 +2457,33 @@ export default function App() {
         activePermissionCount={active?.permissions.length}
         info={info}
         grok={grok}
+        appVersion={appVersion}
+        updateAvailable={!!updateCheck?.updateAvailable && !updateBannerDismissed}
         onShowShortcuts={() => setShowShortcuts(true)}
+        onOpenUpdates={() => {
+          setInspectorTab("settings");
+          setUpdateBannerDismissed(false);
+        }}
       />
+      {(updateCheck?.updateAvailable || updating) &&
+        !updateBannerDismissed && (
+          <UpdateBanner
+            update={
+              updateCheck ?? {
+                updateAvailable: false,
+                currentCommit: appVersion?.commit ?? "",
+                currentCommitShort: appVersion?.commitShort ?? "",
+                githubRepo: "criptocbas/grok-desk",
+                githubBranch: "main",
+                canAutoUpdate: !!appVersion?.repoPath,
+              }
+            }
+            updating={updating}
+            onUpdate={() => void startAppUpdate()}
+            onDismiss={() => setUpdateBannerDismissed(true)}
+            onOpenSettings={() => setInspectorTab("settings")}
+          />
+        )}
 
       <div className="flex min-h-0 flex-1">
         <LeftNavigator
@@ -2698,7 +2774,15 @@ export default function App() {
                   busy={active.busy}
                 />
               )}
-              {inspectorTab === "settings" && <SettingsPane />}
+              {inspectorTab === "settings" && (
+                <SettingsPane
+                  versionInfo={appVersion}
+                  updateCheck={updateCheck}
+                  updating={updating}
+                  onCheckUpdates={() => void checkForUpdates()}
+                  onStartUpdate={() => void startAppUpdate()}
+                />
+              )}
             </InspectorRail>
           )}
         </div>
