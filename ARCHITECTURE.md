@@ -33,6 +33,7 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 - **Permission mode** is a Desk per-tab policy: `always-approve` auto-answers `session/request_permission` with an allow option (agent still enforces deny rules/hooks).
 - **Background notifications** via `notify-send` when a non-active tab finishes a turn or needs permission.
 - **Activity feed** derives from `tool_call` / `tool_call_update` plus Grok extensions `task_backgrounded` / `task_completed` (and defensive `turn_completed`). Caps tool history; never stores full terminal logs in the UI.
+- **Pinned sessions** are Desk UI bookmarks (not Grok session storage). Content still resumes via `session/load` from `~/.grok/sessions`.
 
 ### Client capabilities (tools)
 
@@ -84,6 +85,7 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `git_status` / `git_diff` | Working tree for Diff pane |
 | `default_cwd` | Sensible starting folder |
 | `show_notification` | OS notification (`notify-send` on Linux) |
+| `list_pins` / `pin_session` / `unpin_session` / `reorder_pins` | Desk pin bookmarks (`~/.config/grok-desk/pins.json`) |
 
 ## UI reliability (frontend)
 

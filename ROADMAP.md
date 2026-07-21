@@ -24,7 +24,8 @@
 - [x] Resume from `~/.grok/sessions` (`session/load` + recents list)
 - [x] Lightweight markdown rendering for assistant replies
 - [x] Session title from first prompt / disk summary
-- [ ] OS notifications when a background session finishes (nice-to-have)
+- [x] Pinned sessions (Desk bookmarks in `~/.config/grok-desk/pins.json`, auto-resume on Connect)
+- [x] OS notifications when a background session finishes
 - [ ] Worktree-per-session toggle
 
 ## Phase 2 — Review loop ✅

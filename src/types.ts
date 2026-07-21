@@ -49,6 +49,16 @@ export type DiskSession = {
   numChatMessages: number | null;
 };
 
+/** Desk bookmark — persists across app restarts (`~/.config/grok-desk/pins.json`). */
+export type SessionPin = {
+  sessionId: string;
+  cwd: string;
+  title?: string | null;
+  pinnedAt?: string | null;
+  /** Session no longer found under ~/.grok/sessions */
+  missing?: boolean;
+};
+
 export type PermissionOption = {
   optionId: string;
   name: string;

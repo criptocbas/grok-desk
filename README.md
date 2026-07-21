@@ -17,6 +17,7 @@ Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://ag
 - **OS notifications** when a background tab finishes a turn or needs permission
 - **Slash / skill palette** — type `/` to browse agent commands and skills
 - **Activity feed** — running tools, subagents, background tasks with durations
+- **Pinned sessions** — bookmark conversations; auto-resume on Connect after restart
 - **Plan pane** — live checklist; Enter plan mode · Approve · Revise (real `exit_plan_mode` handshake)
 - **Diff pane** — git status/diff; auto-refresh after file-mutating tools; click `+` lines for review notes
 - Review notes inject into the next prompt automatically

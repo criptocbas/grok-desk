@@ -26,6 +26,7 @@ import type {
   QueuedPrompt,
   ReviewComment,
   SessionInfo,
+  SessionPin,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
@@ -165,6 +166,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [diskSessions, setDiskSessions] = useState<DiskSession[]>([]);
   const [showRecents, setShowRecents] = useState(false);
+  /** Bookmarks that survive app restarts (`~/.config/grok-desk/pins.json`). */
+  const [pins, setPins] = useState<SessionPin[]>([]);
+  const [resumingPins, setResumingPins] = useState(false);
+  const pinsRestoredRef = useRef(false);
   /** Right inspector: closed by default — chat-first. */
   const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -378,11 +383,62 @@ export default function App() {
     }
   }, []);
 
+  const refreshPins = useCallback(async () => {
+    try {
+      const list = await invoke<SessionPin[]>("list_pins");
+      setPins(list);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const isPinned = useCallback(
+    (sessionId: string, cwd?: string) =>
+      pins.some(
+        (p) =>
+          p.sessionId === sessionId &&
+          (cwd == null || cwd === "" || p.cwd === cwd),
+      ),
+    [pins],
+  );
+
+  const pinSession = useCallback(
+    async (sessionId: string, cwd: string, title?: string | null) => {
+      try {
+        const list = await invoke<SessionPin[]>("pin_session", {
+          sessionId,
+          cwd,
+          title: title || null,
+        });
+        setPins(list);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [],
+  );
+
+  const unpinSession = useCallback(
+    async (sessionId: string, cwd?: string) => {
+      try {
+        const list = await invoke<SessionPin[]>("unpin_session", {
+          sessionId,
+          cwd: cwd || null,
+        });
+        setPins(list);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     refreshStatus();
     refreshDisk();
+    refreshPins();
     invoke<string>("default_cwd").then(setCwd).catch(() => {});
-  }, [refreshStatus, refreshDisk]);
+  }, [refreshStatus, refreshDisk, refreshPins]);
 
   useEffect(() => {
     let cancelled = false;
@@ -794,6 +850,12 @@ export default function App() {
       setInfo(i);
       setRunning(true);
       await refreshDisk();
+      await refreshPins();
+      // Auto-resume pinned conversations once per agent connection.
+      if (!pinsRestoredRef.current) {
+        pinsRestoredRef.current = true;
+        void resumePinnedSessions();
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -808,6 +870,7 @@ export default function App() {
       setInfo(null);
       setSessions([]);
       setActiveId(null);
+      pinsRestoredRef.current = false;
     } catch (e) {
       setError(String(e));
     }
@@ -864,16 +927,34 @@ export default function App() {
     }
   };
 
-  const resumeDisk = async (d: DiskSession) => {
-    setError(null);
-    setShowRecents(false);
+  /**
+   * Load a disk session into a tab (Recents / Pins).
+   * @param activate — focus the tab when true (default). Bulk pin restore uses false then focuses first.
+   */
+  const resumeSession = async (
+    d: {
+      sessionId: string;
+      cwd: string;
+      title?: string | null;
+      modelId?: string | null;
+    },
+    opts?: { activate?: boolean; quiet?: boolean },
+  ): Promise<boolean> => {
+    const activate = opts?.activate !== false;
+    const quiet = opts?.quiet === true;
+    if (!quiet) {
+      setError(null);
+      setShowRecents(false);
+    }
     try {
+      // Ensure agent is up (idempotent if already connected).
       if (!running) {
         const i = await invoke<AgentInfo>("agent_start");
         setInfo(i);
         setRunning(true);
+        pinsRestoredRef.current = true;
       }
-      // Avoid duplicate open tabs
+
       let alreadyOpen = false;
       setSessions((prev) => {
         if (prev.some((s) => s.sessionId === d.sessionId)) {
@@ -884,7 +965,7 @@ export default function App() {
           sessionId: d.sessionId,
           cwd: d.cwd,
           title: d.title || folderName(d.cwd),
-          modelId: d.modelId,
+          modelId: d.modelId ?? null,
           reasoningEffort: null,
           availableModels: info?.availableModels ?? [],
           permissionMode: "default",
@@ -911,13 +992,12 @@ export default function App() {
         stickBottomRef.current[d.sessionId] = true;
         return [desk, ...prev];
       });
-      setActiveId(d.sessionId);
+      if (activate) setActiveId(d.sessionId);
       if (alreadyOpen) {
-        void refreshGit(d.cwd);
-        return;
+        if (activate) void refreshGit(d.cwd);
+        return true;
       }
 
-      // Clear stream buffers — history will replay via session/update
       streamBuf.current[d.sessionId] = {
         assistant: "",
         thought: "",
@@ -926,7 +1006,7 @@ export default function App() {
         tId: null,
         uId: null,
       };
-      setCwd(d.cwd);
+      if (activate) setCwd(d.cwd);
 
       const loaded = await invoke<SessionInfo>("session_load", {
         sessionId: d.sessionId,
@@ -942,7 +1022,6 @@ export default function App() {
       } catch {
         /* optional */
       }
-      // Drop oversized thoughts from replay so resume doesn't freeze the UI
       patchSession(d.sessionId, (s) => ({
         ...s,
         busy: false,
@@ -953,6 +1032,7 @@ export default function App() {
           loaded.availableModels?.length
             ? loaded.availableModels
             : s.availableModels,
+        title: d.title || s.title,
         items: [
           ...s.items
             .filter((i) => i.role !== "system" || !i.text.startsWith("Loading"))
@@ -973,10 +1053,73 @@ export default function App() {
           },
         ],
       }));
-      void refreshGit(d.cwd);
+      if (activate) void refreshGit(d.cwd);
+      return true;
     } catch (e) {
-      setError(String(e));
-      patchSession(d.sessionId, (s) => ({ ...s, busy: false }));
+      if (!quiet) setError(String(e));
+      patchSession(d.sessionId, (s) => ({
+        ...s,
+        busy: false,
+        items: [
+          ...s.items.filter(
+            (i) => i.role !== "system" || !i.text.startsWith("Loading"),
+          ),
+          {
+            id: uid(),
+            role: "system",
+            text: `Failed to resume: ${String(e)}`,
+          },
+        ],
+      }));
+      return false;
+    }
+  };
+
+  const resumeDisk = async (d: DiskSession) => {
+    await resumeSession(d, { activate: true });
+  };
+
+  /** After Connect: open all non-missing pins as tabs (history replay). */
+  const resumePinnedSessions = async () => {
+    let list: SessionPin[] = pins;
+    try {
+      list = await invoke<SessionPin[]>("list_pins");
+      setPins(list);
+    } catch {
+      /* use state */
+    }
+    const toLoad = list.filter((p) => !p.missing);
+    if (toLoad.length === 0) return;
+
+    setResumingPins(true);
+    try {
+      let firstId: string | null = null;
+      for (const p of toLoad) {
+        // Skip if already open
+        if (sessionsRef.current.some((s) => s.sessionId === p.sessionId)) {
+          if (!firstId) firstId = p.sessionId;
+          continue;
+        }
+        const ok = await resumeSession(
+          {
+            sessionId: p.sessionId,
+            cwd: p.cwd,
+            title: p.title,
+          },
+          { activate: false, quiet: true },
+        );
+        if (ok && !firstId) firstId = p.sessionId;
+      }
+      if (firstId) {
+        setActiveId(firstId);
+        const pin = toLoad.find((p) => p.sessionId === firstId);
+        if (pin) {
+          setCwd(pin.cwd);
+          void refreshGit(pin.cwd);
+        }
+      }
+    } finally {
+      setResumingPins(false);
     }
   };
 
@@ -1894,11 +2037,115 @@ export default function App() {
             </button>
           </div>
 
-          {/* Open sessions */}
+          {/* Sessions: pinned (persistent) + open tabs */}
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            <div className="mb-2 flex items-center justify-between px-1">
+            {/* Pinned — always visible, survives restarts */}
+            <div className="mb-3">
+              <div className="mb-1.5 flex items-center justify-between px-1">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
+                  Pinned
+                </span>
+                <span className="mono text-[10px] text-[var(--text-faint)]">
+                  {resumingPins ? "…" : pins.length}
+                </span>
+              </div>
+              {pins.length === 0 ? (
+                <p className="px-2 text-[11px] leading-relaxed text-[var(--text-faint)]">
+                  Pin a session to reopen it automatically after restart. Use 📌
+                  on a tab or in Recents.
+                </p>
+              ) : (
+                <ul className="space-y-0.5">
+                  {pins.map((p) => {
+                    const open = sessions.some(
+                      (s) => s.sessionId === p.sessionId,
+                    );
+                    const selected = p.sessionId === activeId;
+                    return (
+                      <li key={`${p.sessionId}:${p.cwd}`}>
+                        <div
+                          className={`group flex w-full items-start gap-1 rounded-lg px-1.5 py-1.5 ${
+                            selected
+                              ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
+                              : "hover:bg-[var(--bg-hover)]"
+                          } ${p.missing ? "opacity-60" : ""}`}
+                        >
+                          <button
+                            type="button"
+                            disabled={p.missing && !open}
+                            title={
+                              p.missing
+                                ? "Session missing on disk — unpin or resume failed"
+                                : open
+                                  ? "Focus session"
+                                  : "Open pinned session"
+                            }
+                            onClick={() => {
+                              if (open) {
+                                setActiveId(p.sessionId);
+                                setCwd(p.cwd);
+                                void refreshGit(p.cwd);
+                                return;
+                              }
+                              if (p.missing) return;
+                              void resumeSession(
+                                {
+                                  sessionId: p.sessionId,
+                                  cwd: p.cwd,
+                                  title: p.title,
+                                },
+                                { activate: true },
+                              );
+                            }}
+                            className="flex min-w-0 flex-1 items-start gap-2 px-1 py-0.5 text-left disabled:cursor-not-allowed"
+                          >
+                            <span className="mt-1 shrink-0 text-[10px] text-[var(--accent)]">
+                              📌
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[12px] font-medium">
+                                {p.title || folderName(p.cwd)}
+                                {p.missing ? (
+                                  <span className="ml-1 text-[10px] font-normal text-[var(--danger)]">
+                                    missing
+                                  </span>
+                                ) : open ? (
+                                  <span className="ml-1 text-[10px] font-normal text-[var(--success)]">
+                                    open
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="mono truncate text-[10px] text-[var(--text-faint)]">
+                                {folderName(p.cwd)} · {shortId(p.sessionId)}
+                              </div>
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            title="Unpin"
+                            onClick={() =>
+                              void unpinSession(p.sessionId, p.cwd)
+                            }
+                            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--warning)] group-hover:opacity-100"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {resumingPins && (
+                <p className="mt-1 px-2 text-[10px] text-[var(--warning)]">
+                  Restoring pinned sessions…
+                </p>
+              )}
+            </div>
+
+            <div className="mb-2 flex items-center justify-between border-t border-[var(--border)] px-1 pt-3">
               <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-                Sessions
+                Open
               </span>
               <span className="mono text-[10px] text-[var(--text-faint)]">
                 {sessions.length}
@@ -1906,12 +2153,14 @@ export default function App() {
             </div>
             {sessions.length === 0 ? (
               <p className="px-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-                Connect, pick a project folder, then open a session.
+                Connect, pick a project folder, then open a session — or click a
+                pin above.
               </p>
             ) : (
               <ul className="space-y-0.5">
                 {sessions.map((s) => {
                   const selected = s.sessionId === activeId;
+                  const pinned = isPinned(s.sessionId, s.cwd);
                   return (
                     <li key={s.sessionId}>
                       <button
@@ -1934,8 +2183,16 @@ export default function App() {
                           }`}
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-[13px] font-medium">
-                            {s.title}
+                          <div className="flex items-center gap-1 truncate text-[13px] font-medium">
+                            {pinned && (
+                              <span
+                                className="text-[10px] text-[var(--accent)]"
+                                title="Pinned"
+                              >
+                                📌
+                              </span>
+                            )}
+                            <span className="truncate">{s.title}</span>
                           </div>
                           <div className="mono truncate text-[10px] text-[var(--text-faint)]">
                             {folderName(s.cwd)}
@@ -1955,6 +2212,37 @@ export default function App() {
                         <span
                           role="button"
                           tabIndex={0}
+                          title={pinned ? "Unpin" : "Pin (keep after restart)"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (pinned) {
+                              void unpinSession(s.sessionId, s.cwd);
+                            } else {
+                              void pinSession(s.sessionId, s.cwd, s.title);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.stopPropagation();
+                              if (pinned) {
+                                void unpinSession(s.sessionId, s.cwd);
+                              } else {
+                                void pinSession(s.sessionId, s.cwd, s.title);
+                              }
+                            }
+                          }}
+                          className={`rounded px-1 text-[11px] opacity-0 group-hover:opacity-100 ${
+                            pinned
+                              ? "text-[var(--accent)] opacity-100"
+                              : "text-[var(--text-faint)] hover:text-[var(--accent)]"
+                          }`}
+                        >
+                          📌
+                        </span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          title="Close tab"
                           onClick={(e) => {
                             e.stopPropagation();
                             closeSession(s.sessionId);
@@ -1982,22 +2270,55 @@ export default function App() {
                   From disk
                 </div>
                 <ul className="space-y-1">
-                  {diskSessions.slice(0, 15).map((d) => (
-                    <li key={d.sessionId}>
-                      <button
-                        onClick={() => void resumeDisk(d)}
-                        disabled={!running && !grok?.available}
-                        className="w-full rounded-md px-2.5 py-2 text-left hover:bg-white/5 disabled:opacity-40"
+                  {diskSessions.slice(0, 15).map((d) => {
+                    const pinned = isPinned(d.sessionId, d.cwd);
+                    return (
+                      <li
+                        key={d.sessionId}
+                        className="group flex items-start gap-0.5"
                       >
-                        <div className="truncate text-xs font-medium">
-                          {d.title || folderName(d.cwd)}
-                        </div>
-                        <div className="mono truncate text-[10px] text-[var(--text-muted)]">
-                          {folderName(d.cwd)} · {formatTime(d.updatedAt)}
-                        </div>
-                      </button>
-                    </li>
-                  ))}
+                        <button
+                          onClick={() => void resumeDisk(d)}
+                          disabled={!running && !grok?.available}
+                          className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left hover:bg-white/5 disabled:opacity-40"
+                        >
+                          <div className="truncate text-xs font-medium">
+                            {pinned && (
+                              <span className="mr-1 text-[var(--accent)]">
+                                📌
+                              </span>
+                            )}
+                            {d.title || folderName(d.cwd)}
+                          </div>
+                          <div className="mono truncate text-[10px] text-[var(--text-muted)]">
+                            {folderName(d.cwd)} · {formatTime(d.updatedAt)}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          title={pinned ? "Unpin" : "Pin session"}
+                          onClick={() => {
+                            if (pinned) {
+                              void unpinSession(d.sessionId, d.cwd);
+                            } else {
+                              void pinSession(
+                                d.sessionId,
+                                d.cwd,
+                                d.title || folderName(d.cwd),
+                              );
+                            }
+                          }}
+                          className={`mt-2 shrink-0 rounded px-1.5 text-[11px] ${
+                            pinned
+                              ? "text-[var(--accent)]"
+                              : "text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--accent)]"
+                          }`}
+                        >
+                          📌
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
@@ -2044,6 +2365,34 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isPinned(active.sessionId, active.cwd)) {
+                          void unpinSession(active.sessionId, active.cwd);
+                        } else {
+                          void pinSession(
+                            active.sessionId,
+                            active.cwd,
+                            active.title,
+                          );
+                        }
+                      }}
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        isPinned(active.sessionId, active.cwd)
+                          ? "bg-[var(--accent)]/15 text-[var(--accent)]"
+                          : "bg-[var(--bg-panel)] text-[var(--text-muted)] hover:text-[var(--accent)]"
+                      }`}
+                      title={
+                        isPinned(active.sessionId, active.cwd)
+                          ? "Unpin — won’t auto-open on next launch"
+                          : "Pin — reopen after Desk restart"
+                      }
+                    >
+                      {isPinned(active.sessionId, active.cwd)
+                        ? "📌 Pinned"
+                        : "Pin"}
+                    </button>
                     {active.modeId === "plan" && (
                       <span className="rounded-full bg-[var(--thought)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--thought)]">
                         plan mode
@@ -2724,6 +3073,7 @@ export default function App() {
                 ["Enter", "Send, queue if busy, or complete slash"],
                 ["Shift + Enter", "New line in composer"],
                 ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
+                ["📌 Pin", "Keep session across Desk restarts"],
                 ["Ctrl + /", "This help"],
               ].map(([keys, desc]) => (
                 <li

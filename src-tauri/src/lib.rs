@@ -1,5 +1,6 @@
 mod acp;
 mod git;
+mod pins;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use acp::{AgentInfo, DiskSession, GrokStatus, SessionInfo, SharedAgent};
 use git::{GitDiffResult, GitStatusResult};
 use parking_lot::Mutex;
+use pins::SessionPin;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
@@ -269,6 +271,33 @@ fn show_notification(title: String, body: String) -> Result<(), String> {
     acp::show_notification(&title, &body).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn list_pins() -> Result<Vec<SessionPin>, String> {
+    pins::list_pins()
+}
+
+#[tauri::command]
+fn pin_session(
+    session_id: String,
+    cwd: String,
+    title: Option<String>,
+) -> Result<Vec<SessionPin>, String> {
+    pins::pin_session(session_id, cwd, title)
+}
+
+#[tauri::command]
+fn unpin_session(
+    session_id: String,
+    cwd: Option<String>,
+) -> Result<Vec<SessionPin>, String> {
+    pins::unpin_session(session_id, cwd)
+}
+
+#[tauri::command]
+fn reorder_pins(session_ids: Vec<String>) -> Result<Vec<SessionPin>, String> {
+    pins::reorder_pins(session_ids)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -297,6 +326,10 @@ pub fn run() {
             git_diff,
             default_cwd,
             show_notification,
+            list_pins,
+            pin_session,
+            unpin_session,
+            reorder_pins,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

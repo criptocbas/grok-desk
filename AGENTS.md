@@ -4,7 +4,7 @@
 
 Desktop shell for Grok Build. UI in React/Tauri; agent runtime is the official `grok` CLI via ACP (`grok agent stdio`). SuperGrok Heavy works through `~/.grok/auth.json` (`cached_token`).
 
-**Version:** 0.9.x · **Phases 0–2 complete** · Phase 3 control + activity feed shipped — see `ROADMAP.md`.
+**Version:** 0.9.x · **Phases 0–2 complete** · Phase 3 control, activity feed, pins — see `ROADMAP.md`.
 
 ## Rules
 
