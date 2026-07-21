@@ -26,6 +26,7 @@
 - [x] Session title from first prompt / disk summary
 - [x] Pinned sessions (Desk bookmarks in `~/.config/grok-desk/pins.json`, auto-resume on Connect)
 - [x] Session groups / folders (`session-groups.json`, collapsible in left nav)
+- [x] Pin a group — auto-resume all member sessions on Connect
 - [x] OS notifications when a background session finishes
 - [ ] Worktree-per-session toggle
 

@@ -64,12 +64,30 @@ export type SessionGroup = {
   id: string;
   name: string;
   collapsed?: boolean;
+  /** When true, all members auto-resume on Connect. */
+  pinned?: boolean;
+};
+
+export type SessionRef = {
+  cwd: string;
+  title?: string | null;
 };
 
 export type SessionGroupsState = {
   groups: SessionGroup[];
   /** sessionId → groupId */
   membership: Record<string, string>;
+  /** sessionId → last known cwd/title (for group-pin resume) */
+  sessionRefs?: Record<string, SessionRef>;
+};
+
+/** Session to open because its group is pinned. */
+export type GroupResumeTarget = {
+  sessionId: string;
+  cwd: string;
+  title?: string | null;
+  groupId: string;
+  groupName: string;
 };
 
 export type PermissionOption = {

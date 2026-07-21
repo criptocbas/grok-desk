@@ -12,7 +12,7 @@ use git::{GitDiffResult, GitStatusResult};
 use parking_lot::Mutex;
 use pins::SessionPin;
 use serde_json::Value;
-use session_groups::SessionGroupsState;
+use session_groups::{GroupResumeTarget, SessionGroupsState};
 use tauri::{AppHandle, Emitter, State};
 
 struct AppState {
@@ -347,8 +347,30 @@ fn set_group_collapsed(
 fn set_session_group(
     session_id: String,
     group_id: Option<String>,
+    cwd: Option<String>,
+    title: Option<String>,
 ) -> Result<SessionGroupsState, String> {
-    session_groups::set_session_group(session_id, group_id)
+    session_groups::set_session_group(session_id, group_id, cwd, title)
+}
+
+#[tauri::command]
+fn set_group_pinned(group_id: String, pinned: bool) -> Result<SessionGroupsState, String> {
+    session_groups::set_group_pinned(group_id, pinned)
+}
+
+#[tauri::command]
+fn touch_session_ref(
+    session_id: String,
+    cwd: String,
+    title: Option<String>,
+) -> Result<SessionGroupsState, String> {
+    session_groups::touch_session_ref(session_id, cwd, title)
+}
+
+/// Sessions belonging to pinned groups (for auto-resume on Connect).
+#[tauri::command]
+fn list_pinned_group_sessions() -> Result<Vec<GroupResumeTarget>, String> {
+    session_groups::list_pinned_group_resume_targets()
 }
 
 #[tauri::command]
@@ -396,6 +418,9 @@ pub fn run() {
             delete_session_group,
             set_group_collapsed,
             set_session_group,
+            set_group_pinned,
+            touch_session_ref,
+            list_pinned_group_sessions,
             reorder_session_groups,
         ])
         .setup(|app| {

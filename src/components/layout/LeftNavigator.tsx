@@ -46,6 +46,7 @@ type Props = {
   onDeleteGroup: (groupId: string) => void;
   onSetGroupCollapsed: (groupId: string, collapsed: boolean) => void;
   onSetSessionGroup: (sessionId: string, groupId: string | null) => void;
+  onSetGroupPinned: (groupId: string, pinned: boolean) => void;
   showRecents: boolean;
   onToggleRecents: () => void;
   diskSessions: DiskSession[];
@@ -86,6 +87,7 @@ export function LeftNavigator({
   onDeleteGroup,
   onSetGroupCollapsed,
   onSetSessionGroup,
+  onSetGroupPinned,
   showRecents,
   onToggleRecents,
   diskSessions,
@@ -480,6 +482,14 @@ export function LeftNavigator({
                       <span className="text-[10px] text-[var(--text-faint)]">
                         {isCollapsed ? "▸" : "▾"}
                       </span>
+                      {g.pinned && (
+                        <span
+                          className="text-[10px] text-[var(--accent)]"
+                          title="Group pinned — members resume on Connect"
+                        >
+                          📌
+                        </span>
+                      )}
                       {renamingGroupId === g.id ? (
                         <input
                           value={renameGroupDraft}
@@ -517,6 +527,22 @@ export function LeftNavigator({
                       <span className="mono shrink-0 text-[10px] text-[var(--text-faint)]">
                         {members.length}
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      title={
+                        g.pinned
+                          ? "Unpin group — members won’t auto-resume"
+                          : "Pin group — all members resume on Connect"
+                      }
+                      onClick={() => onSetGroupPinned(g.id, !g.pinned)}
+                      className={`rounded px-1 text-[11px] ${
+                        g.pinned
+                          ? "text-[var(--accent)]"
+                          : "text-[var(--text-faint)] opacity-0 hover:text-[var(--accent)] group-hover/hdr:opacity-100"
+                      }`}
+                    >
+                      📌
                     </button>
                     <button
                       type="button"

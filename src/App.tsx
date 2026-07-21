@@ -25,6 +25,7 @@ import type {
   SessionInfo,
   SessionPin,
   SessionGroupsState,
+  GroupResumeTarget,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
@@ -406,6 +407,7 @@ export default function App() {
       setSessionGroups({
         groups: state.groups ?? [],
         membership: state.membership ?? {},
+        sessionRefs: state.sessionRefs ?? {},
       });
     } catch {
       /* ignore */
@@ -465,14 +467,26 @@ export default function App() {
         const fallback = sess ? folderName(sess.cwd) : "Untitled";
         const display = (saved && saved.trim()) || fallback;
         patchSession(sessionId, (s) => ({ ...s, title: display }));
-        // Refresh pins + recents so lists pick up the new name
+        // Keep group-pin resume metadata in sync
+        if (sess) {
+          try {
+            await invoke("touch_session_ref", {
+              sessionId,
+              cwd: sess.cwd,
+              title: display,
+            });
+          } catch {
+            /* ignore */
+          }
+        }
         await refreshPins();
         await refreshDisk();
+        await refreshGroups();
       } catch (e) {
         setError(String(e));
       }
     },
-    [patchSession, refreshPins, refreshDisk],
+    [patchSession, refreshPins, refreshDisk, refreshGroups],
   );
 
   const reorderPins = useCallback(async (sessionIds: string[]) => {
@@ -496,6 +510,7 @@ export default function App() {
     setSessionGroups({
       groups: state.groups ?? [],
       membership: state.membership ?? {},
+      sessionRefs: state.sessionRefs ?? {},
     });
   };
 
@@ -554,10 +569,13 @@ export default function App() {
   const setSessionGroup = useCallback(
     async (sessionId: string, groupId: string | null) => {
       try {
+        const sess = sessionsRef.current.find((s) => s.sessionId === sessionId);
         applyGroupsState(
           await invoke<SessionGroupsState>("set_session_group", {
             sessionId,
             groupId,
+            cwd: sess?.cwd ?? null,
+            title: sess?.title ?? null,
           }),
         );
       } catch (e) {
@@ -566,6 +584,40 @@ export default function App() {
     },
     [],
   );
+
+  const setGroupPinned = useCallback(async (groupId: string, pinned: boolean) => {
+    try {
+      // Ensure every open member has a cwd ref before pinning (resume needs it)
+      if (pinned) {
+        const state = sessionGroups;
+        const members = Object.entries(state.membership)
+          .filter(([, gid]) => gid === groupId)
+          .map(([sid]) => sid);
+        for (const sid of members) {
+          const sess = sessionsRef.current.find((s) => s.sessionId === sid);
+          if (sess) {
+            try {
+              await invoke("touch_session_ref", {
+                sessionId: sid,
+                cwd: sess.cwd,
+                title: sess.title ?? null,
+              });
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+      applyGroupsState(
+        await invoke<SessionGroupsState>("set_group_pinned", {
+          groupId,
+          pinned,
+        }),
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [sessionGroups]);
 
   useEffect(() => {
     try {
@@ -1306,44 +1358,82 @@ export default function App() {
     await resumeSession(d, { activate: true });
   };
 
-  /** After Connect: open all non-missing pins as tabs (history replay). */
+  /** After Connect: open pinned sessions + all members of pinned groups. */
   const resumePinnedSessions = async () => {
-    let list: SessionPin[] = pins;
+    type Target = {
+      sessionId: string;
+      cwd: string;
+      title?: string | null;
+    };
+    const targets: Target[] = [];
+    const seen = new Set<string>();
+
+    const push = (t: Target) => {
+      if (seen.has(t.sessionId) || !t.cwd) return;
+      seen.add(t.sessionId);
+      targets.push(t);
+    };
+
     try {
-      list = await invoke<SessionPin[]>("list_pins");
+      const list = await invoke<SessionPin[]>("list_pins");
       setPins(list);
+      for (const p of list.filter((x) => !x.missing)) {
+        push({ sessionId: p.sessionId, cwd: p.cwd, title: p.title });
+      }
     } catch {
-      /* use state */
+      for (const p of pins.filter((x) => !x.missing)) {
+        push({ sessionId: p.sessionId, cwd: p.cwd, title: p.title });
+      }
     }
-    const toLoad = list.filter((p) => !p.missing);
-    if (toLoad.length === 0) return;
+
+    try {
+      const groupTargets = await invoke<GroupResumeTarget[]>(
+        "list_pinned_group_sessions",
+      );
+      for (const t of groupTargets) {
+        push({
+          sessionId: t.sessionId,
+          cwd: t.cwd,
+          title: t.title,
+        });
+      }
+    } catch {
+      /* optional */
+    }
+
+    await refreshGroups();
+
+    if (targets.length === 0) return;
 
     setResumingPins(true);
     try {
       let firstId: string | null = null;
-      for (const p of toLoad) {
-        // Skip if already open
-        if (sessionsRef.current.some((s) => s.sessionId === p.sessionId)) {
-          if (!firstId) firstId = p.sessionId;
+      let firstCwd: string | null = null;
+      for (const t of targets) {
+        if (sessionsRef.current.some((s) => s.sessionId === t.sessionId)) {
+          if (!firstId) {
+            firstId = t.sessionId;
+            firstCwd = t.cwd;
+          }
           continue;
         }
         const ok = await resumeSession(
           {
-            sessionId: p.sessionId,
-            cwd: p.cwd,
-            title: p.title,
+            sessionId: t.sessionId,
+            cwd: t.cwd,
+            title: t.title,
           },
           { activate: false, quiet: true },
         );
-        if (ok && !firstId) firstId = p.sessionId;
-      }
-      if (firstId) {
-        setActiveId(firstId);
-        const pin = toLoad.find((p) => p.sessionId === firstId);
-        if (pin) {
-          setCwd(pin.cwd);
-          void refreshGit(pin.cwd);
+        if (ok && !firstId) {
+          firstId = t.sessionId;
+          firstCwd = t.cwd;
         }
+      }
+      if (firstId && firstCwd) {
+        setActiveId(firstId);
+        setCwd(firstCwd);
+        void refreshGit(firstCwd);
       }
     } finally {
       setResumingPins(false);
@@ -2370,6 +2460,9 @@ export default function App() {
           }
           onSetSessionGroup={(sessionId, groupId) =>
             void setSessionGroup(sessionId, groupId)
+          }
+          onSetGroupPinned={(groupId, pinned) =>
+            void setGroupPinned(groupId, pinned)
           }
           showRecents={showRecents}
           onToggleRecents={() => {
