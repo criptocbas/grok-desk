@@ -172,6 +172,14 @@ export default function App() {
   const pinsRestoredRef = useRef(false);
   /** Right inspector: closed by default — chat-first. */
   const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
+  /** Left rail collapsed for focus mode (persisted). */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("grok-desk.sidebarCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
@@ -439,6 +447,21 @@ export default function App() {
     refreshPins();
     invoke<string>("default_cwd").then(setCwd).catch(() => {});
   }, [refreshStatus, refreshDisk, refreshPins]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "grok-desk.sidebarCollapsed",
+        sidebarCollapsed ? "1" : "0",
+      );
+    } catch {
+      /* private mode */
+    }
+  }, [sidebarCollapsed]);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((v) => !v);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -809,7 +832,7 @@ export default function App() {
         }
       }
 
-      // Alt+P / Alt+D — inspector (avoid clashing with browser menus when possible)
+      // Alt+P / Alt+D — inspector; Alt+B — sidebar (focus mode)
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const k = e.key.toLowerCase();
         if (k === "p") {
@@ -822,6 +845,19 @@ export default function App() {
           setInspectorTab((t) => (t === "diff" ? null : "diff"));
           return;
         }
+        if (k === "b") {
+          e.preventDefault();
+          setSidebarCollapsed((v) => !v);
+          return;
+        }
+      }
+
+      // Ctrl/Cmd+B — collapse left rail (IDE-familiar)
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "b") {
+        if (typing) return;
+        e.preventDefault();
+        setSidebarCollapsed((v) => !v);
+        return;
       }
 
       if (typing) return;
@@ -1971,7 +2007,97 @@ export default function App() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* Sidebar */}
+        {/* Sidebar — full or collapsed focus rail */}
+        {sidebarCollapsed ? (
+          <aside
+            className="flex w-12 shrink-0 flex-col items-center border-r border-[var(--border)] bg-[var(--bg-panel)] py-2"
+            aria-label="Collapsed sidebar"
+          >
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              title="Expand sidebar (Ctrl+B / Alt+B)"
+              className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+            >
+              ›
+            </button>
+            <div
+              className={`mb-2 h-2 w-2 rounded-full ${
+                running
+                  ? active?.busy
+                    ? "animate-pulse bg-[var(--warning)]"
+                    : "bg-[var(--success)]"
+                  : "bg-[var(--text-faint)]"
+              }`}
+              title={headerStatus}
+            />
+            {!running ? (
+              <button
+                type="button"
+                onClick={() => void connect()}
+                disabled={connecting || !grok?.available}
+                title="Connect"
+                className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent)] text-xs font-bold text-[var(--accent-fg)] disabled:opacity-40"
+              >
+                {connecting ? "…" : "C"}
+              </button>
+            ) : null}
+            <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-1">
+              {sessions.map((s) => {
+                const selected = s.sessionId === activeId;
+                const run = countRunningTools(s.tools);
+                return (
+                  <button
+                    key={s.sessionId}
+                    type="button"
+                    title={`${s.title}\n${s.cwd}`}
+                    onClick={() => {
+                      setActiveId(s.sessionId);
+                      setCwd(s.cwd);
+                      void refreshGit(s.cwd);
+                    }}
+                    className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold ${
+                      selected
+                        ? "bg-[var(--bg-active)] text-[var(--accent)] ring-1 ring-[var(--accent)]/40"
+                        : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+                    }`}
+                  >
+                    {(s.title || folderName(s.cwd)).slice(0, 1).toUpperCase()}
+                    {s.busy || run > 0 ? (
+                      <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--warning)]" />
+                    ) : isPinned(s.sessionId, s.cwd) ? (
+                      <span className="absolute bottom-0.5 right-0.5 text-[7px] text-[var(--accent)]">
+                        •
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+            {pins.length > 0 && sessions.length === 0 && (
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                title={`${pins.length} pinned — expand to open`}
+                className="mb-1 text-[10px] text-[var(--accent)]"
+              >
+                📌{pins.length}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setShowRecents(true);
+                setSidebarCollapsed(false);
+                void refreshDisk();
+              }}
+              title="Recents"
+              className="mt-auto flex h-8 w-8 items-center justify-center rounded-md text-[10px] text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+            >
+              ☰
+            </button>
+          </aside>
+        ) : (
         <aside className="flex w-[17.5rem] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-panel)]">
           <div className="space-y-2.5 border-b border-[var(--border)] p-3">
             <div className="flex gap-1.5">
@@ -2004,6 +2130,14 @@ export default function App() {
                 title="Recent sessions on disk"
               >
                 Recents
+              </button>
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                title="Collapse sidebar (Ctrl+B / Alt+B) — focus mode"
+                className="rounded-md border border-[var(--border)] px-2.5 py-2 text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+              >
+                ‹
               </button>
             </div>
 
@@ -2343,6 +2477,7 @@ export default function App() {
             </details>
           )}
         </aside>
+        )}
 
         {/* Main + plan */}
         <div className="flex min-w-0 flex-1">
@@ -3074,6 +3209,7 @@ export default function App() {
                 ["Shift + Enter", "New line in composer"],
                 ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
                 ["📌 Pin", "Keep session across Desk restarts"],
+                ["Ctrl+B / Alt+B", "Collapse / expand left sidebar"],
                 ["Ctrl + /", "This help"],
               ].map(([keys, desc]) => (
                 <li
