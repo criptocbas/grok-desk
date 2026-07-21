@@ -314,6 +314,10 @@ export function LeftNavigator({
                   (s) => s.sessionId === p.sessionId,
                 );
                 const selected = p.sessionId === activeId;
+                const pinGroupId = groupMembership[p.sessionId];
+                const pinGroup = pinGroupId
+                  ? groups.find((g) => g.id === pinGroupId)
+                  : undefined;
                 return (
                   <li
                     key={`${p.sessionId}:${p.cwd}`}
@@ -379,8 +383,22 @@ export function LeftNavigator({
                               </span>
                             ) : null}
                           </div>
-                          <div className="mono truncate text-[10px] text-[var(--text-faint)]">
-                            {folderName(p.cwd)} · {shortId(p.sessionId)}
+                          <div className="truncate text-[10px] text-[var(--text-faint)]">
+                            {pinGroup ? (
+                              <span
+                                className="text-[var(--text-muted)]"
+                                title={`Group: ${pinGroup.name}`}
+                              >
+                                {pinGroup.name}
+                                <span className="text-[var(--text-faint)]">
+                                  {" "}
+                                  ·{" "}
+                                </span>
+                              </span>
+                            ) : null}
+                            <span className="mono">
+                              {folderName(p.cwd)} · {shortId(p.sessionId)}
+                            </span>
                           </div>
                         </div>
                       </button>
