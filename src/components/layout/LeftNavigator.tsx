@@ -416,10 +416,10 @@ export function LeftNavigator({
                                 📌
                               </span>
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1 truncate text-[12px] font-medium">
+                                <div className="flex items-center gap-1 truncate text-[11px] font-medium">
                                   <SessionTitleLabel
                                     title={p.title || folderName(p.cwd)}
-                                    className="text-[12px] font-medium"
+                                    className="text-[11px] font-medium"
                                     onRename={(next) =>
                                       onRenameSession(p.sessionId, next)
                                     }
@@ -706,13 +706,13 @@ export function LeftNavigator({
                       disabled={!running && !grokAvailable}
                       className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
                     >
-                      <div className="flex items-center gap-1 truncate text-xs font-medium">
+                      <div className="flex items-center gap-1 truncate text-[11px] font-medium">
                         {pinned && (
                           <span className="text-[var(--accent)]">📌</span>
                         )}
                         <SessionTitleLabel
                           title={d.title || folderName(d.cwd)}
-                          className="text-xs font-medium"
+                          className="text-[11px] font-medium"
                           onRename={(next) =>
                             onRenameSession(d.sessionId, next)
                           }
@@ -840,7 +840,7 @@ function SessionRow({
             aria-hidden
           />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1 truncate text-[13px] font-medium">
+            <div className="flex items-center gap-1 truncate text-[11px] font-medium">
               {pinned && (
                 <span
                   className="text-[10px] text-[var(--accent)]"
@@ -852,7 +852,7 @@ function SessionRow({
               )}
               <SessionTitleLabel
                 title={s.title}
-                className="text-[13px] font-medium"
+                className="text-[11px] font-medium"
                 onRename={(next) => onRenameSession(s.sessionId, next)}
               />
             </div>
