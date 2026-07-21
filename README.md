@@ -5,9 +5,9 @@
 Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://agentclientprotocol.com) to `grok agent stdio`.
 
 ![Phase 3](https://img.shields.io/badge/phase-3%20workspace-00a8ff)
-![v0.8](https://img.shields.io/badge/version-0.8-blue)
+![v0.9](https://img.shields.io/badge/version-0.9-blue)
 
-## Features (v0.8)
+## Features (v0.9)
 
 - Connect to Grok Build (`grok agent stdio`) with SuperGrok Heavy (via CLI cached auth)
 - **Multi-session mission control** — parallel tabs on one agent process
@@ -16,6 +16,7 @@ Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://ag
 - **Permission modes** — Ask vs Always-approve per tab (auto-allows tool prompts)
 - **OS notifications** when a background tab finishes a turn or needs permission
 - **Slash / skill palette** — type `/` to browse agent commands and skills
+- **Activity feed** — running tools, subagents, background tasks with durations
 - **Plan pane** — live checklist; Enter plan mode · Approve · Revise (real `exit_plan_mode` handshake)
 - **Diff pane** — git status/diff; auto-refresh after file-mutating tools; click `+` lines for review notes
 - Review notes inject into the next prompt automatically

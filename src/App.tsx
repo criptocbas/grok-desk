@@ -38,7 +38,17 @@ import {
   filterCommands,
   getSlashMatch,
 } from "./components/SlashPalette";
+import { ActivityPane } from "./components/ActivityPane";
 import { RichText } from "./components/RichText";
+import {
+  countRunningBackground,
+  countRunningTools,
+  isToolDone,
+  parseTaskBackgrounded,
+  parseTaskCompleted,
+  upsertBackgroundTask,
+  upsertToolCall,
+} from "./activity";
 
 const DEFAULT_EFFORTS = [
   { id: "high", value: "high", label: "High" },
@@ -94,11 +104,6 @@ function isMutatingTool(title: string, kind?: string): boolean {
     t.includes("create_file") ||
     t.includes("apply_patch")
   );
-}
-
-function isToolDone(status: string): boolean {
-  const s = status.toLowerCase();
-  return s === "completed" || s === "success" || s === "done" || s === "failed" || s === "error";
 }
 
 function uid() {
@@ -586,46 +591,49 @@ export default function App() {
             availableCommands: cmds,
           }));
         }
-      } else if (kind === "tool_call") {
+      } else if (kind === "tool_call" || kind === "tool_call_update") {
+        const planFromTool = planFromTodoInput(update.rawInput ?? update);
+        const prevTools =
+          sessionsRef.current.find((s) => s.sessionId === sessionId)?.tools ??
+          [];
+        const tools = upsertToolCall(prevTools, update, Date.now());
         const id =
           (update.toolCallId as string) ||
           (update.tool_call_id as string) ||
-          uid();
-        const title =
-          (update.title as string) || (update.tool as string) || "tool";
-        const status = (update.status as string) || "pending";
-        const kindStr = update.kind as string | undefined;
-        const planFromTool = planFromTodoInput(update.rawInput ?? update);
+          "";
+        const tool = tools.find((t) => t.id === id);
+        const title = tool?.title || "tool";
+        const status = tool?.status || "in_progress";
+        const kindStr = tool?.kind;
+
+        if (!id && kind === "tool_call_update") return;
+
         patchSession(sessionId, (s) => {
-          const tools = [
-            ...s.tools.filter((t) => t.id !== id),
-            {
-              id,
-              title,
-              kind: kindStr,
-              status,
-              raw: update,
-            },
-          ];
+          const nextTools = upsertToolCall(s.tools, update, Date.now());
+          const t = nextTools.find((x) => x.id === id);
+          const tTitle = t?.title || title;
+          const tStatus = t?.status || status;
           const items = s.items.some((i) => i.id === `tool-${id}`)
             ? s.items.map((i) =>
                 i.id === `tool-${id}`
-                  ? { ...i, text: title, meta: status, status }
+                  ? { ...i, text: tTitle, meta: tStatus, status: tStatus }
                   : i,
               )
-            : [
-                ...s.items,
-                {
-                  id: `tool-${id}`,
-                  role: "tool" as const,
-                  text: title,
-                  meta: status,
-                  status,
-                },
-              ];
+            : id
+              ? [
+                  ...s.items,
+                  {
+                    id: `tool-${id}`,
+                    role: "tool" as const,
+                    text: tTitle,
+                    meta: tStatus,
+                    status: tStatus,
+                  },
+                ]
+              : s.items;
           return {
             ...s,
-            tools,
+            tools: nextTools,
             items,
             plan: planFromTool ?? s.plan,
           };
@@ -633,42 +641,69 @@ export default function App() {
         if (isToolDone(status) && isMutatingTool(title, kindStr)) {
           scheduleGitRefresh(sessionId);
         }
-      } else if (kind === "tool_call_update") {
-        const id =
-          (update.toolCallId as string) ||
-          (update.tool_call_id as string) ||
-          "";
-        const status = (update.status as string) || "updated";
-        if (!id) return;
-        const planFromTool = planFromTodoInput(update.rawInput ?? update);
-        // Title may only live on the prior tool_call row
-        const prevTitle =
-          sessionsRef.current
-            .find((s) => s.sessionId === sessionId)
-            ?.tools.find((t) => t.id === id)?.title ?? "";
-        const title =
-          (update.title as string) ||
-          (update.tool as string) ||
-          prevTitle ||
-          "tool";
-        const kindStr =
-          (update.kind as string | undefined) ||
-          sessionsRef.current
-            .find((s) => s.sessionId === sessionId)
-            ?.tools.find((t) => t.id === id)?.kind;
+      } else if (kind === "task_backgrounded") {
+        const task = parseTaskBackgrounded(update, Date.now());
+        if (!task) return;
+        patchSession(sessionId, (s) => {
+          let tools = s.tools;
+          if (task.toolCallId) {
+            tools = tools.map((t) =>
+              t.id === task.toolCallId
+                ? {
+                    ...t,
+                    status: "background",
+                    category: "background" as const,
+                    detail: task.description || task.command || t.detail,
+                  }
+                : t,
+            );
+          }
+          return {
+            ...s,
+            tools,
+            backgroundTasks: upsertBackgroundTask(
+              s.backgroundTasks ?? [],
+              task,
+            ),
+          };
+        });
+      } else if (kind === "task_completed") {
+        const patch = parseTaskCompleted(update, Date.now());
+        if (!patch) return;
+        patchSession(sessionId, (s) => {
+          const tasks = upsertBackgroundTask(s.backgroundTasks ?? [], patch);
+          const linked = tasks.find((t) => t.taskId === patch.taskId);
+          let tools = s.tools;
+          if (linked?.toolCallId) {
+            tools = tools.map((t) =>
+              t.id === linked.toolCallId
+                ? {
+                    ...t,
+                    status: patch.status === "failed" ? "failed" : "completed",
+                    endedAt: patch.endedAt ?? Date.now(),
+                    category: "background" as const,
+                  }
+                : t,
+            );
+          }
+          return { ...s, tools, backgroundTasks: tasks };
+        });
+      } else if (kind === "turn_completed") {
+        // Defensive: close tools that never got a terminal status.
+        // Leave backgrounded tools alone — they outlive the turn.
         patchSession(sessionId, (s) => ({
           ...s,
-          tools: s.tools.map((t) =>
-            t.id === id ? { ...t, status, raw: update, title: title || t.title } : t,
-          ),
-          items: s.items.map((i) =>
-            i.id === `tool-${id}` ? { ...i, meta: status, status } : i,
-          ),
-          plan: planFromTool ?? s.plan,
+          tools: s.tools.map((t) => {
+            if (isToolDone(t.status)) return t;
+            if (t.status === "background" || t.category === "background")
+              return t;
+            return {
+              ...t,
+              status: "completed",
+              endedAt: t.endedAt ?? Date.now(),
+            };
+          }),
         }));
-        if (isToolDone(status) && isMutatingTool(title, kindStr)) {
-          scheduleGitRefresh(sessionId);
-        }
       }
     }).then(track);
 
@@ -801,6 +836,7 @@ export default function App() {
           },
         ],
         tools: [],
+        backgroundTasks: [],
         permissions: [],
         busy: false,
         createdAt: Date.now(),
@@ -862,6 +898,7 @@ export default function App() {
             },
           ],
           tools: [],
+          backgroundTasks: [],
           permissions: [],
           busy: true,
           createdAt: Date.now(),
@@ -1746,7 +1783,7 @@ export default function App() {
               Grok Desk
             </span>
             <span className="text-[10px] text-[var(--text-faint)]">
-              v0.8 · mission control
+              v0.9 · mission control
             </span>
           </div>
         </div>
@@ -1902,9 +1939,17 @@ export default function App() {
                           </div>
                           <div className="mono truncate text-[10px] text-[var(--text-faint)]">
                             {folderName(s.cwd)}
-                            {s.plan.length > 0
-                              ? ` · plan ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`
-                              : ""}
+                            {(() => {
+                              const run = countRunningTools(s.tools);
+                              const bg = countRunningBackground(
+                                s.backgroundTasks ?? [],
+                              );
+                              if (run > 0) return ` · ${run} run`;
+                              if (bg > 0) return ` · ${bg} bg`;
+                              if (s.plan.length > 0)
+                                return ` · plan ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`;
+                              return "";
+                            })()}
                           </div>
                         </div>
                         <span
@@ -1958,46 +2003,13 @@ export default function App() {
             )}
           </div>
 
-          {/* Tools for active session — collapsed by default */}
-          <details className="border-t border-[var(--border)] open:max-h-52">
-            <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)] hover:text-[var(--text-muted)]">
-              Tools
-              {active && active.tools.length > 0
-                ? ` · ${active.tools.length}`
-                : ""}
-            </summary>
-            <div className="max-h-40 overflow-auto px-2 pb-2">
-              {!active || active.tools.length === 0 ? (
-                <p className="px-1 text-[11px] text-[var(--text-muted)]">
-                  Tool calls appear here while the agent works.
-                </p>
-              ) : (
-                <ul className="space-y-0.5">
-                  {[...active.tools].reverse().slice(0, 16).map((t) => (
-                    <li
-                      key={t.id}
-                      className="flex items-center justify-between gap-2 rounded-md px-2 py-1 text-[11px] hover:bg-[var(--bg-hover)]"
-                    >
-                      <span className="truncate font-medium text-[var(--tool)]">
-                        {t.title}
-                      </span>
-                      <span
-                        className={`mono shrink-0 text-[10px] ${
-                          t.status === "completed"
-                            ? "text-[var(--success)]"
-                            : t.status === "failed"
-                              ? "text-[var(--danger)]"
-                              : "text-[var(--text-faint)]"
-                        }`}
-                      >
-                        {t.status}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </details>
+          {active && (
+            <ActivityPane
+              tools={active.tools}
+              backgroundTasks={active.backgroundTasks ?? []}
+              busy={active.busy}
+            />
+          )}
 
           {stderrTail.length > 0 && (
             <details className="border-t border-[var(--border)] p-2 text-[10px] text-[var(--text-muted)]">
@@ -2829,23 +2841,26 @@ function MessageBubble({ item }: { item: ChatItem }) {
     );
   }
   if (item.role === "tool") {
+    const st = (item.meta || item.status || "").toLowerCase();
     return (
       <div className="mono flex items-center gap-2 text-[11px] text-[var(--tool)]">
         <span className="rounded-md bg-[var(--tool)]/10 px-1.5 py-0.5 text-[10px]">
           tool
         </span>
-        <span className="truncate">{item.text}</span>
+        <span className="min-w-0 truncate">{item.text}</span>
         {item.meta && (
           <span
             className={
-              item.meta === "completed"
+              st === "completed" || st === "success" || st === "done"
                 ? "text-[var(--success)]"
-                : item.meta === "failed"
+                : st === "failed" || st === "error"
                   ? "text-[var(--danger)]"
-                  : "text-[var(--text-faint)]"
+                  : st === "in_progress" || st === "pending" || st === "background"
+                    ? "text-[var(--warning)]"
+                    : "text-[var(--text-faint)]"
             }
           >
-            · {item.meta}
+            · {item.meta === "in_progress" ? "running" : item.meta}
           </span>
         )}
       </div>

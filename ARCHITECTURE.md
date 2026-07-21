@@ -21,7 +21,7 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 4. **Permissions are first-class** — every `session/request_permission` becomes a card with options.
 5. **Plan approval is a reverse RPC** — `x.ai/exit_plan_mode` must be answered or the agent hangs.
 
-## Process model (v0.8)
+## Process model (v0.9)
 
 - One `grok agent stdio` process per app connection.
 - One agent process can host **many** ACP sessions (`session/new` / `session/load`).
@@ -32,6 +32,7 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 - **Model / effort** via ACP `session/set_model` (optional `_meta.reasoningEffort`). Catalog from `session/new` / initialize `_meta.modelState`.
 - **Permission mode** is a Desk per-tab policy: `always-approve` auto-answers `session/request_permission` with an allow option (agent still enforces deny rules/hooks).
 - **Background notifications** via `notify-send` when a non-active tab finishes a turn or needs permission.
+- **Activity feed** derives from `tool_call` / `tool_call_update` plus Grok extensions `task_backgrounded` / `task_completed` (and defensive `turn_completed`). Caps tool history; never stores full terminal logs in the UI.
 
 ### Client capabilities (tools)
 

@@ -1,7 +1,7 @@
 # Grok Desk — Roadmap
 
-**Current version:** 0.8.x  
-**Current phase focus:** Phase 3 — Workspace (control surface shipped; chrome next)  
+**Current version:** 0.9.x  
+**Current phase focus:** Phase 3 — Workspace (control + activity shipped; chrome next)  
 **Explicitly deferred:** GrokLink / phone remote commander (PC product first)
 
 ## Phase 0 — ACP spike ✅
@@ -51,7 +51,7 @@ Priority order is flexible; pick with the user:
 - [ ] Embedded terminal (PTY in project cwd)
 - [ ] File tree + open in external editor
 - [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
-- [ ] Richer tool / subagent / background-task presentation (Tier 2)
+- [x] Richer tool / subagent / background-task presentation (Activity pane + task_* events)
 
 ## Phase 4 — Ship loop
 

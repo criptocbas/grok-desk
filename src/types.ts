@@ -76,9 +76,36 @@ export type ChatItem = {
 export type ToolCallItem = {
   id: string;
   title: string;
+  /** ACP kind: read | search | execute | edit | … */
   kind?: string;
+  /** Canonical tool name from _meta x.ai/tool.name when present */
+  name?: string;
   status: string;
+  /** Epoch ms */
+  startedAt?: number;
+  endedAt?: number;
+  /** One-line context: path, command snippet, subagent description */
+  detail?: string;
+  /** Classified category for UI grouping */
+  category?: "tool" | "subagent" | "background" | "other";
+  locations?: { path: string }[];
+  /** Last slim update payload (not full logs) */
   raw?: unknown;
+};
+
+/** Long-running shell/subagent work advertised via task_backgrounded / task_completed. */
+export type BackgroundTaskItem = {
+  taskId: string;
+  toolCallId?: string;
+  description?: string;
+  command?: string;
+  cwd?: string;
+  outputFile?: string;
+  status: "running" | "completed" | "failed" | "unknown";
+  startedAt?: number;
+  endedAt?: number;
+  /** Truncated exit summary only (≤300 chars) */
+  summary?: string;
 };
 
 export type PlanEntryStatus = "pending" | "in_progress" | "completed" | string;
@@ -132,6 +159,8 @@ export type DeskSession = {
   availableCommands: AvailableCommand[];
   items: ChatItem[];
   tools: ToolCallItem[];
+  /** Background shell / task_id work for this session. */
+  backgroundTasks: BackgroundTaskItem[];
   permissions: PermissionRequest[];
   busy: boolean;
   createdAt: number;
