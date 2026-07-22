@@ -28,6 +28,7 @@ import type {
   SessionGroupsState,
   GroupResumeTarget,
   UpdateCheckResult,
+  UpdatePhase,
   UpdateStartResult,
 } from "./types";
 import { PlanPane } from "./components/PlanPane";
@@ -136,7 +137,7 @@ export default function App() {
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(
     null,
   );
-  const [updating, setUpdating] = useState(false);
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
@@ -283,16 +284,60 @@ export default function App() {
   const startAppUpdate = useCallback(async () => {
     try {
       const r = await invoke<UpdateStartResult>("start_self_update");
-      setUpdating(true);
+      setUpdatePhase("running");
+      setUpdateBannerDismissed(false);
       setError(null);
       if (r.message) {
-        /* surface in Settings log; also soft-notify */
         void notifyOs("Grok Desk update", r.message.slice(0, 120));
       }
     } catch (e) {
       setError(String(e));
+      setUpdatePhase("failed");
     }
   }, []);
+
+  const restartApp = useCallback(async () => {
+    try {
+      await invoke("restart_app");
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  // Poll update.log while rebuild runs; flip button to Restart when OK.
+  useEffect(() => {
+    if (updatePhase !== "running") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const log = await invoke<string>("read_update_log", {
+          maxBytes: 12_000,
+        });
+        if (cancelled) return;
+        if (/Update finished OK/i.test(log)) {
+          setUpdatePhase("ready");
+          setUpdateBannerDismissed(false);
+          void notifyOs(
+            "Grok Desk update ready",
+            "Rebuild finished — restart to use the new build.",
+          );
+          return;
+        }
+        if (/Update failed|Update spawn error/i.test(log)) {
+          setUpdatePhase("failed");
+          setError("App update failed — see Settings → App & updates log.");
+        }
+      } catch {
+        /* ignore poll errors */
+      }
+    };
+    void tick();
+    const t = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [updatePhase]);
 
   useEffect(() => {
     void invoke<AppVersionInfo>("app_version_info")
@@ -2924,7 +2969,10 @@ export default function App() {
           setUpdateBannerDismissed(false);
         }}
       />
-      {(updateCheck?.updateAvailable || updating) &&
+      {(updateCheck?.updateAvailable ||
+        updatePhase === "running" ||
+        updatePhase === "ready" ||
+        updatePhase === "failed") &&
         !updateBannerDismissed && (
           <UpdateBanner
             update={
@@ -2937,8 +2985,9 @@ export default function App() {
                 canAutoUpdate: !!appVersion?.repoPath,
               }
             }
-            updating={updating}
+            phase={updatePhase}
             onUpdate={() => void startAppUpdate()}
+            onRestart={() => void restartApp()}
             onDismiss={() => setUpdateBannerDismissed(true)}
             onOpenSettings={() => setInspectorTab("settings")}
           />
@@ -3270,9 +3319,10 @@ export default function App() {
                 <SettingsPane
                   versionInfo={appVersion}
                   updateCheck={updateCheck}
-                  updating={updating}
+                  updatePhase={updatePhase}
                   onCheckUpdates={() => void checkForUpdates()}
                   onStartUpdate={() => void startAppUpdate()}
+                  onRestartApp={() => void restartApp()}
                 />
               )}
             </InspectorRail>

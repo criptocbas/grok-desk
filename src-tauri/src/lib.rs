@@ -409,6 +409,23 @@ fn clipboard_read_image() -> Result<Option<clipboard::ClipboardImage>, String> {
     clipboard::read_image()
 }
 
+/// Relaunch the app process (picks up a newly installed binary).
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    // Prefer the installed user-local binary when meta exists.
+    if let Some(meta) = install::load_install_meta() {
+        if let Some(bin) = meta.binary_path.as_ref() {
+            let path = PathBuf::from(bin);
+            if path.is_file() {
+                let _ = std::process::Command::new(&path).spawn();
+                app.exit(0);
+                return;
+            }
+        }
+    }
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = env_logger::try_init();
@@ -458,6 +475,7 @@ pub fn run() {
             start_self_update,
             read_update_log,
             clipboard_read_image,
+            restart_app,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

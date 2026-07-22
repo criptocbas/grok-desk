@@ -1,21 +1,27 @@
-import type { UpdateCheckResult } from "../../types";
+import type { UpdateCheckResult, UpdatePhase } from "../../types";
 
 type Props = {
   update: UpdateCheckResult;
-  updating: boolean;
+  phase: UpdatePhase;
   onUpdate: () => void;
+  onRestart: () => void;
   onDismiss: () => void;
   onOpenSettings?: () => void;
 };
 
 export function UpdateBanner({
   update,
-  updating,
+  phase,
   onUpdate,
+  onRestart,
   onDismiss,
   onOpenSettings,
 }: Props) {
-  if (!update.updateAvailable && !updating) return null;
+  const updating = phase === "running";
+  const ready = phase === "ready";
+  const failed = phase === "failed";
+
+  if (!update.updateAvailable && phase === "idle") return null;
 
   const short =
     update.remoteCommitShort ?? update.remoteCommit?.slice(0, 7) ?? "…";
@@ -23,14 +29,27 @@ export function UpdateBanner({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-2 border-b border-[var(--accent)]/35 bg-[color-mix(in_srgb,var(--accent)_10%,var(--bg))] px-4 py-2 text-xs"
+      className={`flex flex-wrap items-center gap-2 border-b px-4 py-2 text-xs ${
+        ready
+          ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_10%,var(--bg))]"
+          : failed
+            ? "border-[var(--danger)]/40 bg-[var(--bg-danger-subtle)]"
+            : "border-[var(--accent)]/35 bg-[color-mix(in_srgb,var(--accent)_10%,var(--bg))]"
+      }`}
       role="status"
       aria-live="polite"
     >
-      {updating ? (
+      {ready ? (
+        <span className="text-[var(--success)]">
+          Update installed — restart to run the new build.
+        </span>
+      ) : failed ? (
+        <span className="text-[var(--danger)]">
+          Update failed — open Settings for the log, or try again.
+        </span>
+      ) : updating ? (
         <span className="text-[var(--accent)]">
-          Updating in the background (pull · rebuild · reinstall). Restart when
-          the log says OK.
+          Updating in the background (pull · rebuild · reinstall)…
         </span>
       ) : (
         <span className="text-[var(--text)]">
@@ -43,7 +62,25 @@ export function UpdateBanner({
         </span>
       )}
 
-      {!updating && update.canAutoUpdate && (
+      {ready && (
+        <button
+          type="button"
+          onClick={onRestart}
+          className="rounded border border-[var(--success)]/50 bg-[var(--success)]/15 px-2 py-0.5 font-medium text-[var(--success)] hover:bg-[var(--success)]/25"
+        >
+          Restart now
+        </button>
+      )}
+      {failed && update.canAutoUpdate && (
+        <button
+          type="button"
+          onClick={onUpdate}
+          className="rounded border border-[var(--accent)]/50 bg-[var(--accent)]/15 px-2 py-0.5 font-medium text-[var(--accent)] hover:bg-[var(--accent)]/25"
+        >
+          Retry update
+        </button>
+      )}
+      {!updating && !ready && !failed && update.canAutoUpdate && (
         <button
           type="button"
           onClick={onUpdate}
@@ -52,7 +89,7 @@ export function UpdateBanner({
           Update now
         </button>
       )}
-      {!updating && !update.canAutoUpdate && onOpenSettings && (
+      {!updating && !ready && !failed && !update.canAutoUpdate && onOpenSettings && (
         <button
           type="button"
           onClick={onOpenSettings}

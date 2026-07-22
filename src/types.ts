@@ -335,3 +335,6 @@ export type UpdateStartResult = {
   message: string;
   logPath?: string | null;
 };
+
+/** In-app self-update progress (pull · rebuild · reinstall). */
+export type UpdatePhase = "idle" | "running" | "ready" | "failed";

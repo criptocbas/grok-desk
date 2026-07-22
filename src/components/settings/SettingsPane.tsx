@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppVersionInfo,
   UpdateCheckResult,
+  UpdatePhase,
   UpdateStartResult,
 } from "../../types";
 
@@ -68,29 +69,34 @@ type Props = {
   /** Optional: parent may pass live update state so banner + settings stay in sync. */
   versionInfo?: AppVersionInfo | null;
   updateCheck?: UpdateCheckResult | null;
-  updating?: boolean;
+  updatePhase?: UpdatePhase;
   onCheckUpdates?: () => void;
   onStartUpdate?: () => void;
+  onRestartApp?: () => void;
 };
 
 export function SettingsPane({
   versionInfo: versionProp,
   updateCheck: updateProp,
-  updating: updatingProp,
+  updatePhase: phaseProp,
   onCheckUpdates,
   onStartUpdate,
+  onRestartApp,
 }: Props = {}) {
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [localVersion, setLocalVersion] = useState<AppVersionInfo | null>(null);
   const [localUpdate, setLocalUpdate] = useState<UpdateCheckResult | null>(null);
-  const [localUpdating, setLocalUpdating] = useState(false);
+  const [localPhase, setLocalPhase] = useState<UpdatePhase>("idle");
   const [checking, setChecking] = useState(false);
   const [updateLog, setUpdateLog] = useState("");
   const [actionMsg, setActionMsg] = useState<string | null>(null);
 
   const versionInfo = versionProp ?? localVersion;
   const updateCheck = updateProp ?? localUpdate;
-  const updating = updatingProp ?? localUpdating;
+  const updatePhase = phaseProp ?? localPhase;
+  const updating = updatePhase === "running";
+  const updateReady = updatePhase === "ready";
+  const updateFailed = updatePhase === "failed";
 
   useEffect(() => {
     applyPrefs(prefs);
@@ -118,11 +124,23 @@ export function SettingsPane({
   }, []);
 
   useEffect(() => {
-    if (!updating) return;
+    if (updatePhase !== "running" && updatePhase !== "ready") return;
     void refreshLog();
-    const t = window.setInterval(() => void refreshLog(), 3000);
+    const t = window.setInterval(() => void refreshLog(), 2500);
     return () => window.clearInterval(t);
-  }, [updating, refreshLog]);
+  }, [updatePhase, refreshLog]);
+
+  // Local-only mode: detect completion from log when parent doesn't drive phase.
+  useEffect(() => {
+    if (phaseProp || localPhase !== "running") return;
+    if (/Update finished OK/i.test(updateLog)) {
+      setLocalPhase("ready");
+      setActionMsg("Update installed — restart to use the new build.");
+    } else if (/Update failed|Update spawn error/i.test(updateLog)) {
+      setLocalPhase("failed");
+      setActionMsg("Update failed — see log below.");
+    }
+  }, [phaseProp, localPhase, updateLog]);
 
   const set = <K extends keyof Prefs>(key: K, value: Prefs[K]) => {
     setPrefs((p) => ({ ...p, [key]: value }));
@@ -156,9 +174,22 @@ export function SettingsPane({
     setActionMsg(null);
     try {
       const r = await invoke<UpdateStartResult>("start_self_update");
-      setLocalUpdating(true);
+      setLocalPhase("running");
       setActionMsg(r.message);
       void refreshLog();
+    } catch (e) {
+      setLocalPhase("failed");
+      setActionMsg(String(e));
+    }
+  };
+
+  const handleRestart = async () => {
+    if (onRestartApp) {
+      onRestartApp();
+      return;
+    }
+    try {
+      await invoke("restart_app");
     } catch (e) {
       setActionMsg(String(e));
     }
@@ -289,17 +320,29 @@ export function SettingsPane({
           >
             {checking ? "Checking…" : "Check for updates"}
           </button>
-          {(updateCheck?.updateAvailable || updating) &&
-            (updateCheck?.canAutoUpdate ?? versionInfo?.repoPath) && (
-              <button
-                type="button"
-                disabled={updating}
-                onClick={() => void handleUpdate()}
-                className="rounded border border-[var(--accent)]/50 bg-[var(--accent)]/15 px-2 py-1 font-medium text-[var(--accent)] hover:bg-[var(--accent)]/25 disabled:opacity-60"
-              >
-                {updating ? "Updating…" : "Update now"}
-              </button>
-            )}
+          {updateReady ? (
+            <button
+              type="button"
+              onClick={() => void handleRestart()}
+              className="rounded border border-[var(--success)]/50 bg-[var(--success)]/15 px-2 py-1 font-medium text-[var(--success)] hover:bg-[var(--success)]/25"
+            >
+              Restart now
+            </button>
+          ) : (updateCheck?.updateAvailable || updating || updateFailed) &&
+            (updateCheck?.canAutoUpdate ?? versionInfo?.repoPath) ? (
+            <button
+              type="button"
+              disabled={updating}
+              onClick={() => void handleUpdate()}
+              className="rounded border border-[var(--accent)]/50 bg-[var(--accent)]/15 px-2 py-1 font-medium text-[var(--accent)] hover:bg-[var(--accent)]/25 disabled:opacity-60"
+            >
+              {updating
+                ? "Updating…"
+                : updateFailed
+                  ? "Retry update"
+                  : "Update now"}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => void refreshLog()}
@@ -308,6 +351,13 @@ export function SettingsPane({
             Refresh log
           </button>
         </div>
+
+        {updateReady && (
+          <p className="mt-2 text-[var(--success)]">
+            Rebuild finished. Click <strong>Restart now</strong> to launch the
+            new binary.
+          </p>
+        )}
 
         {actionMsg && (
           <p className="mt-2 text-[var(--text-muted)]">{actionMsg}</p>
