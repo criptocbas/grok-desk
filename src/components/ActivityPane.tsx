@@ -16,6 +16,7 @@ import {
   isToolFailed,
   isToolRunning,
   kindAccentClass,
+  OUTPUT_BODY_MAX,
   subagentDisplayTitle,
   subagentTypeChip,
 } from "../activity";
@@ -46,6 +47,8 @@ export function ActivityPane({
 
   const [open, setOpen] = useState(busy || live > 0 || embedded);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  /** Tier 2a: selected subagent for the detail panel */
+  const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
@@ -58,6 +61,47 @@ export function ActivityPane({
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [live]);
+
+  // Drop selection if the subagent is gone from state
+  useEffect(() => {
+    if (
+      selectedSubId &&
+      !subagents.some((s) => s.subagentId === selectedSubId)
+    ) {
+      setSelectedSubId(null);
+    }
+  }, [selectedSubId, subagents]);
+
+  // Esc closes detail (does not steal focus from composer when nothing selected)
+  useEffect(() => {
+    if (!selectedSubId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "TEXTAREA" ||
+          t.tagName === "INPUT" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setSelectedSubId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedSubId]);
+
+  const selectedSub =
+    selectedSubId != null
+      ? (subagents.find((s) => s.subagentId === selectedSubId) ?? null)
+      : null;
+
+  const selectSub = (id: string) => {
+    setSelectedSubId((cur) => (cur === id ? null : id));
+    setExpandedId(null);
+  };
 
   const { runningTools, recentTools } = useMemo(() => {
     const running: ToolCallItem[] = [];
@@ -156,14 +200,8 @@ export function ActivityPane({
               key={sub.subagentId}
               sub={sub}
               now={now}
-              expanded={expandedId === `sub-${sub.subagentId}`}
-              onToggle={() =>
-                setExpandedId((id) =>
-                  id === `sub-${sub.subagentId}`
-                    ? null
-                    : `sub-${sub.subagentId}`,
-                )
-              }
+              selected={selectedSubId === sub.subagentId}
+              onSelect={() => selectSub(sub.subagentId)}
             />
           ))}
         </Section>
@@ -206,14 +244,8 @@ export function ActivityPane({
                 key={`sub-${row.sub.subagentId}`}
                 sub={row.sub}
                 now={now}
-                expanded={expandedId === `sub-${row.sub.subagentId}`}
-                onToggle={() =>
-                  setExpandedId((id) =>
-                    id === `sub-${row.sub.subagentId}`
-                      ? null
-                      : `sub-${row.sub.subagentId}`,
-                  )
-                }
+                selected={selectedSubId === row.sub.subagentId}
+                onSelect={() => selectSub(row.sub.subagentId)}
               />
             ) : row.kind === "bg" ? (
               <BgRow
@@ -259,6 +291,13 @@ export function ActivityPane({
     </div>
   );
 
+  const emptyHint = (
+    <p className="px-1 py-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
+      Subagents, tools, and background tasks show up here while the agent works.
+      Click a subagent to inspect its result.
+    </p>
+  );
+
   if (embedded) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
@@ -282,15 +321,15 @@ export function ActivityPane({
             </span>
           )}
         </div>
+        {selectedSub && (
+          <SubagentDetail
+            sub={selectedSub}
+            now={now}
+            onClose={() => setSelectedSubId(null)}
+          />
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-          {empty ? (
-            <p className="px-1 py-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
-              Subagents, tools, and background tasks show up here while the
-              agent works.
-            </p>
-          ) : (
-            feed
-          )}
+          {empty ? emptyHint : feed}
         </div>
       </div>
     );
@@ -328,16 +367,19 @@ export function ActivityPane({
       </button>
 
       {open && (
-        <div className="max-h-64 overflow-y-auto px-2 pb-2">
-          {empty ? (
-            <p className="px-1 py-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
-              Subagents, tools, and background tasks show up here while the
-              agent works.
-            </p>
-          ) : (
-            feed
+        <>
+          {selectedSub && (
+            <SubagentDetail
+              sub={selectedSub}
+              now={now}
+              onClose={() => setSelectedSubId(null)}
+              compact
+            />
           )}
-        </div>
+          <div className="max-h-64 overflow-y-auto px-2 pb-2">
+            {empty ? emptyHint : feed}
+          </div>
+        </>
       )}
     </div>
   );
@@ -363,13 +405,13 @@ function Section({
 function SubagentRow({
   sub,
   now,
-  expanded,
-  onToggle,
+  selected,
+  onSelect,
 }: {
   sub: SubagentItem;
   now: number;
-  expanded: boolean;
-  onToggle: () => void;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   const running = isSubagentRunning(sub.status);
   const failed = sub.status === "failed";
@@ -388,9 +430,14 @@ function SubagentRow({
     <li>
       <button
         type="button"
-        onClick={onToggle}
-        className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-[var(--bg-hover)]"
-        title={title}
+        onClick={onSelect}
+        aria-pressed={selected}
+        className={`flex w-full flex-col gap-0.5 rounded-md border px-2 py-1.5 text-left transition ${
+          selected
+            ? "border-[var(--thought)]/40 bg-[var(--thought)]/10"
+            : "border-transparent hover:bg-[var(--bg-hover)]"
+        }`}
+        title={`${title} — click to inspect`}
       >
         <div className="flex items-center gap-1.5">
           <span className="mono shrink-0 rounded bg-[var(--thought)]/15 px-1 py-0.5 text-[9px] uppercase text-[var(--thought)]">
@@ -421,54 +468,175 @@ function SubagentRow({
               .join(" · ")}
           </div>
         )}
-        {expanded && (
-          <div className="mt-0.5 space-y-0.5 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[10px] text-[var(--text-muted)]">
-            {sub.description && sub.description !== title && (
-              <div>
-                <span className="text-[var(--text-faint)]">task </span>
-                {sub.description}
-              </div>
-            )}
-            {sub.subagentType && (
-              <div>
-                <span className="text-[var(--text-faint)]">type </span>
-                {sub.subagentType}
-              </div>
-            )}
-            {sub.model && (
-              <div>
-                <span className="text-[var(--text-faint)]">model </span>
-                <span className="mono">{sub.model}</span>
-              </div>
-            )}
-            <div className="mono text-[var(--text-faint)]">
-              {shortId(sub.subagentId)}
-            </div>
-            {sub.resumedFrom && (
-              <div>
-                <span className="text-[var(--text-faint)]">resumed </span>
-                <span className="mono">{shortId(sub.resumedFrom)}</span>
-              </div>
-            )}
-            {sub.toolCalls != null && (
-              <div>
-                <span className="text-[var(--text-faint)]">tools </span>
-                {sub.toolCalls}
-                {sub.turns != null ? ` · ${sub.turns} turns` : ""}
-              </div>
-            )}
-            {sub.outputSummary && (
-              <pre className="mono max-h-20 overflow-auto whitespace-pre-wrap text-[var(--text-muted)]">
-                {sub.outputSummary}
-              </pre>
-            )}
-            {!sub.outputSummary && running && (
-              <div className="text-[var(--text-faint)]">Running…</div>
-            )}
-          </div>
-        )}
       </button>
     </li>
+  );
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Tier 2a: read-only inspector for one subagent (no child session load). */
+function SubagentDetail({
+  sub,
+  now,
+  onClose,
+  compact = false,
+}: {
+  sub: SubagentItem;
+  now: number;
+  onClose: () => void;
+  compact?: boolean;
+}) {
+  const [copied, setCopied] = useState<"body" | "id" | null>(null);
+  const running = isSubagentRunning(sub.status);
+  const failed = sub.status === "failed";
+  const title = subagentDisplayTitle(sub);
+  const ms =
+    sub.durationMs != null
+      ? sub.durationMs
+      : sub.startedAt != null
+        ? (sub.endedAt ?? (running ? now : sub.startedAt)) - sub.startedAt
+        : null;
+  const dur = formatDuration(ms ?? undefined);
+  const body = sub.outputBody || sub.outputSummary || "";
+  const bodyTruncated =
+    Boolean(sub.outputBody) && sub.outputBody!.length >= OUTPUT_BODY_MAX - 1;
+
+  const flash = (kind: "body" | "id") => {
+    setCopied(kind);
+    window.setTimeout(() => setCopied(null), 1200);
+  };
+
+  return (
+    <div
+      className={`border-b border-[var(--thought)]/25 bg-[var(--thought)]/5 ${
+        compact ? "px-2 py-2" : "px-3 py-2.5"
+      }`}
+      role="region"
+      aria-label={`Subagent detail: ${title}`}
+    >
+      <div className="mb-1.5 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="mono shrink-0 rounded bg-[var(--thought)]/20 px-1 py-0.5 text-[9px] font-semibold uppercase text-[var(--thought)]">
+              {subagentTypeChip(sub.subagentType)}
+            </span>
+            <span className="min-w-0 truncate text-[12px] font-semibold text-[var(--text)]">
+              {title}
+            </span>
+          </div>
+          <div className="mono mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-[var(--text-faint)]">
+            <span
+              className={
+                failed
+                  ? "text-[var(--danger)]"
+                  : running
+                    ? "text-[var(--warning)]"
+                    : "text-[var(--success)]"
+              }
+            >
+              {sub.status}
+              {dur ? ` · ${dur}` : ""}
+            </span>
+            {sub.subagentType && <span>{sub.subagentType}</span>}
+            {sub.model && <span>{sub.model}</span>}
+            <span title={sub.subagentId}>{shortId(sub.subagentId)}</span>
+            {sub.toolCalls != null && (
+              <span>
+                {sub.toolCalls} tools
+                {sub.turns != null ? ` · ${sub.turns} turns` : ""}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          {body && (
+            <button
+              type="button"
+              onClick={() => {
+                void copyText(body).then((ok) => {
+                  if (ok) flash("body");
+                });
+              }}
+              className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:border-[var(--thought)] hover:text-[var(--thought)]"
+            >
+              {copied === "body" ? "Copied" : "Copy"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              void copyText(sub.subagentId).then((ok) => {
+                if (ok) flash("id");
+              });
+            }}
+            className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:border-[var(--thought)] hover:text-[var(--thought)]"
+            title="Copy subagent id"
+          >
+            {copied === "id" ? "Id ✓" : "Id"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:text-[var(--text)]"
+            title="Close (Esc)"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {running && !body && (
+        <p className="text-[11px] leading-relaxed text-[var(--warning)]">
+          Still running… result appears here when the child finishes.
+        </p>
+      )}
+      {!running && !body && (
+        <p className="text-[11px] leading-relaxed text-[var(--text-faint)]">
+          {failed
+            ? "No output captured for this failed subagent."
+            : "No output body stored (older run or empty result)."}
+        </p>
+      )}
+      {body && (
+        <div
+          className={`rounded-md border border-[var(--border)] bg-[var(--bg)] ${
+            compact ? "max-h-28" : "max-h-48"
+          } overflow-y-auto px-2 py-1.5`}
+        >
+          <pre className="mono whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--text-muted)]">
+            {body}
+          </pre>
+          {bodyTruncated && (
+            <p className="mt-1 text-[10px] text-[var(--text-faint)]">
+              Output truncated for UI safety.
+            </p>
+          )}
+        </div>
+      )}
+      <p className="mt-1 text-[9px] text-[var(--text-faint)]">
+        Read-only · Esc to close · full child transcript not loaded
+      </p>
+    </div>
   );
 }
 

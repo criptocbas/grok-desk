@@ -65,7 +65,8 @@ Priority order is flexible; pick with the user:
 - [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
 - [x] Richer tool / subagent / background-task presentation (Activity pane + task_* events)
 - [x] First-class subagents: `subagent_spawned` / `subagent_finished`, Activity section, transcript cards, watching strip (Tier 1)
-- [ ] Subagent Tier 2: disk meta hydrate + read-only child inspector
+- [x] Subagent Tier 2a: click row → read-only detail panel (capped output + copy; no full child transcript)
+- [ ] Subagent Tier 2b: disk hydrate on resume + optional full child transcript
 - [x] Desktop install (user-local `.desktop` for Super+Space) + in-app update check / rebuild
 
 ## Phase 4 — Ship loop

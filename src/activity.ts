@@ -10,6 +10,8 @@ export const MAX_BACKGROUND_TASKS = 40;
 export const MAX_SUBAGENTS = 40;
 export const DETAIL_MAX = 200;
 export const SUMMARY_MAX = 300;
+/** Capped body for Tier 2a subagent detail panel (chars). */
+export const OUTPUT_BODY_MAX = 6_000;
 
 export function normalizeToolStatus(status: string | undefined | null): string {
   const s = (status || "pending").toLowerCase();
@@ -502,6 +504,9 @@ export function upsertSubagent(
     outputSummary: patch.outputSummary
       ? truncate(patch.outputSummary, SUMMARY_MAX)
       : prev?.outputSummary,
+    outputBody: patch.outputBody
+      ? truncate(patch.outputBody, OUTPUT_BODY_MAX)
+      : prev?.outputBody,
   };
   const rest = list.filter((s) => s.subagentId !== patch.subagentId);
   const out = [...rest, next];
@@ -614,6 +619,7 @@ export function parseSubagentFinished(
           ? update.tokensUsed
           : undefined,
     outputSummary: output ? truncate(output, SUMMARY_MAX) : undefined,
+    outputBody: output ? truncate(output, OUTPUT_BODY_MAX) : undefined,
   };
 }
 

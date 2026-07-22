@@ -187,8 +187,13 @@ export type SubagentItem = {
   toolCalls?: number;
   turns?: number;
   tokensUsed?: number;
-  /** Truncated finish summary (≤ SUMMARY_MAX) */
+  /** Short list teaser (≤ SUMMARY_MAX) */
   outputSummary?: string;
+  /**
+   * Longer finish body for the detail panel (≤ OUTPUT_BODY_MAX).
+   * Still hard-capped — never store full unbounded child transcripts.
+   */
+  outputBody?: string;
 };
 
 export type PlanEntryStatus = "pending" | "in_progress" | "completed" | string;
