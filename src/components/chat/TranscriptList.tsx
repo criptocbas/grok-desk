@@ -194,19 +194,26 @@ function MessageWithActions({
   onRetryUser?: (text: string) => void;
 }): ReactNode {
   const [copied, setCopied] = useState(false);
-  const canCopy =
-    (item.role === "assistant" || item.role === "user") &&
-    Boolean(item.text?.trim());
-  const canRetry = item.role === "user" && Boolean(item.text?.trim());
+  // Assistant: Copy is useful. User: "Edit" reuses the prompt — never "Retry"
+  // (that word reads like something failed).
+  const canCopy = item.role === "assistant" && Boolean(item.text?.trim());
+  const canEdit = item.role === "user" && Boolean(item.text?.trim()) && !!onRetryUser;
 
-  if (!canCopy && !canRetry) {
+  if (!canCopy && !canEdit) {
     return <MessageBubble item={item} />;
   }
+
+  const alignEnd = item.role === "user";
 
   return (
     <div className="group relative">
       <MessageBubble item={item} />
-      <div className="mt-1 flex flex-wrap items-center gap-1 opacity-70 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      {/* Hover/focus only — avoid always-on chrome that looks like an error path. */}
+      <div
+        className={`mt-0.5 flex flex-wrap items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 ${
+          alignEnd ? "justify-end" : ""
+        }`}
+      >
         {canCopy && (
           <button
             type="button"
@@ -217,19 +224,19 @@ function MessageWithActions({
                 window.setTimeout(() => setCopied(false), 1200);
               });
             }}
-            className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            className="rounded px-1.5 py-0.5 text-[10px] text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-muted)] focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
           >
             {copied ? "Copied" : "Copy"}
           </button>
         )}
-        {canRetry && onRetryUser && (
+        {canEdit && (
           <button
             type="button"
-            onClick={() => onRetryUser(item.text)}
-            className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-            title="Put this prompt back in the composer"
+            onClick={() => onRetryUser?.(item.text)}
+            className="rounded px-1.5 py-0.5 text-[10px] text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-muted)] focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            title="Load this prompt into the composer to edit or send again"
           >
-            Retry
+            Edit
           </button>
         )}
       </div>
