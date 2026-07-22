@@ -57,7 +57,8 @@ Priority order is flexible; pick with the user:
 - [x] Pin drag-reorder (wires `reorder_pins`)
 - [x] Settings pane (theme / density / font / accent presets)
 - [ ] Workspace chrome: session tabs, empty states, Ctrl+K command palette, titlebar
-- [ ] Surface polish: structured permissions, composer/plan/diff refinement
+- [x] Surface polish: structured permissions, transcript collapse, composer context strip
+- [ ] Surface polish: plan/diff refinement (remaining)
 - [ ] A11y + progressive onboarding (ARIA live, skippable coach marks)
 - [ ] Embedded terminal (PTY in project cwd)
 - [ ] File tree + open in external editor

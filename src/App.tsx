@@ -81,10 +81,10 @@ import {
   parsePlanEntries,
   planFromTodoInput,
 } from "./lib/planParse";
-import { MessageBubble } from "./components/chat/MessageBubble";
 import { StallBanner } from "./components/chat/StallBanner";
 import { PermissionBanner } from "./components/chat/PermissionBanner";
 import { WatchingBanner } from "./components/chat/WatchingBanner";
+import { TranscriptList } from "./components/chat/TranscriptList";
 import { Composer } from "./components/chat/Composer";
 import { Titlebar } from "./components/layout/Titlebar";
 import { UpdateBanner } from "./components/layout/UpdateBanner";
@@ -2131,6 +2131,69 @@ export default function App() {
     });
   };
 
+  /** Send pending review notes only (no free-text message required). */
+  const sendReviewNotes = async () => {
+    if (!active) return;
+    const comments = active.reviewComments ?? [];
+    if (comments.length === 0) return;
+
+    const sessionId = active.sessionId;
+    const willRunNow =
+      !active.busy && !inFlightRef.current.has(sessionId);
+    const block = comments
+      .map((c) => {
+        const loc =
+          c.startLine != null ? `${c.path}:${c.startLine}` : c.path;
+        const snip = c.snippet ? `\n  > ${c.snippet}` : "";
+        return `- ${loc}: ${c.body}${snip}`;
+      })
+      .join("\n");
+    const text = `Please address the review comments.\n\n## Review comments (apply these fixes)\n${block}`;
+    const displayText = `Review notes (${comments.length})`;
+
+    if (!willRunNow) {
+      const queued: QueuedPrompt = {
+        id: uid(),
+        text,
+        displayText,
+        images: [],
+      };
+      patchSession(sessionId, (s) => ({
+        ...s,
+        reviewComments: [],
+        promptQueue: [...(s.promptQueue ?? []), queued],
+        items: [
+          ...s.items,
+          {
+            id: uid(),
+            role: "system",
+            text: `Queued: ${displayText}`,
+            meta: "queue",
+          },
+        ],
+      }));
+      return;
+    }
+
+    await runPrompt(sessionId, {
+      text,
+      displayText,
+      images: [],
+      clearReviewComments: true,
+      titleHint: "Review notes",
+    });
+  };
+
+  /** Put a past user message back into the composer for edit/resend. */
+  const retryUserPrompt = (text: string) => {
+    if (!active) return;
+    saveDraft(active.sessionId);
+    setPrompt(text);
+    setComposerCursor(text.length);
+    setSlashDismissed(false);
+    focusComposer();
+  };
+
   const cancel = async () => {
     if (!active) return;
     const sessionId = active.sessionId;
@@ -2464,6 +2527,18 @@ export default function App() {
     if (isStalled) return `Quiet ${stallSeconds}s…`;
     return active.busy ? "Running…" : "Ready";
   }, [grok, running, active, isStalled, stallSeconds]);
+
+  /** Screen-reader announcement for busy → ready / permission (polite). */
+  const liveStatus = useMemo(() => {
+    if (!active) return "";
+    if (active.permissions.length > 0) {
+      return "Permission required — review tool request";
+    }
+    if (active.planApproval) return "Plan ready for approval";
+    if (isStalled) return `Agent quiet for ${stallSeconds} seconds`;
+    if (active.busy) return "Agent running";
+    return "Ready";
+  }, [active, isStalled, stallSeconds]);
 
   const sessionModels: ModelOption[] = useMemo(() => {
     if (active?.availableModels?.length) return active.availableModels;
@@ -2912,11 +2987,11 @@ export default function App() {
                     onScroll={onTranscriptScroll}
                     className="h-full overflow-y-auto px-4 py-4"
                   >
-                    <div className="mx-auto max-w-3xl space-y-3">
-                      {active.items.map((item) => (
-                        <MessageBubble key={item.id} item={item} />
-                      ))}
-                    </div>
+                    <TranscriptList
+                      items={active.items}
+                      onOpenActivity={() => setInspectorTab("activity")}
+                      onRetryUser={retryUserPrompt}
+                    />
                   </div>
                   {showJumpToLatest && (
                     <button
@@ -2928,6 +3003,11 @@ export default function App() {
                       {active.busy ? " · streaming" : ""}
                     </button>
                   )}
+                </div>
+
+                {/* Polite live region for turn / permission state (screen readers). */}
+                <div className="sr-only" aria-live="polite" aria-atomic="true">
+                  {liveStatus}
                 </div>
 
                 {error && (
@@ -2993,6 +3073,24 @@ export default function App() {
                   onUndismissSlash={() => setSlashDismissed(false)}
                   onSend={() => void send()}
                   onCancel={() => void cancel()}
+                  context={{
+                    modeId: active.modeId,
+                    permissionMode: active.permissionMode ?? "default",
+                    modelLabel: (() => {
+                      const mid = active.modelId ?? info?.modelId;
+                      if (!mid) return null;
+                      const m = sessionModels.find((x) => x.modelId === mid);
+                      return m?.name || mid;
+                    })(),
+                    effortLabel: supportsEffort
+                      ? active.reasoningEffort ?? info?.reasoningEffort ?? null
+                      : null,
+                    reviewNoteCount: active.reviewComments?.length ?? 0,
+                    busy: active.busy,
+                    onOpenDiff: () => setInspectorTab("diff"),
+                    onOpenPlan: () => setInspectorTab("plan"),
+                    onSendReviewNotes: () => void sendReviewNotes(),
+                  }}
                 />
               </>
             ) : (

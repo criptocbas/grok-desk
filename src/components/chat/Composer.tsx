@@ -4,7 +4,11 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from "react";
-import type { AvailableCommand, QueuedPrompt } from "../../types";
+import type {
+  AvailableCommand,
+  PermissionMode,
+  QueuedPrompt,
+} from "../../types";
 import type { PendingImage } from "../../lib/agentHelpers";
 import {
   SlashPalette,
@@ -12,6 +16,20 @@ import {
   getSlashMatch,
 } from "../SlashPalette";
 import { PromptQueue } from "./PromptQueue";
+
+export type ComposerContext = {
+  modeId?: string | null;
+  permissionMode?: PermissionMode;
+  modelLabel?: string | null;
+  effortLabel?: string | null;
+  reviewNoteCount: number;
+  onOpenDiff?: () => void;
+  onOpenPlan?: () => void;
+  /** Send only pending review notes (injects standard review prompt). */
+  onSendReviewNotes?: () => void;
+  /** When true, "Send notes" queues instead of running immediately. */
+  busy?: boolean;
+};
 
 type Props = {
   busy: boolean;
@@ -39,7 +57,119 @@ type Props = {
   onUndismissSlash: () => void;
   onSend: () => void;
   onCancel: () => void;
+  /** Ambient context chips above the textarea. */
+  context?: ComposerContext;
 };
+
+function ContextStrip({ context }: { context: ComposerContext }) {
+  const {
+    modeId,
+    permissionMode,
+    modelLabel,
+    effortLabel,
+    reviewNoteCount,
+    onOpenDiff,
+    onOpenPlan,
+    onSendReviewNotes,
+    busy = false,
+  } = context;
+
+  const chips: {
+    key: string;
+    label: string;
+    title?: string;
+    className: string;
+    onClick?: () => void;
+  }[] = [];
+
+  if (modeId === "plan") {
+    chips.push({
+      key: "plan",
+      label: "Plan mode",
+      title: "Agent is planning — approve when ready",
+      className:
+        "bg-[var(--thought)]/15 text-[var(--thought)] hover:bg-[var(--thought)]/25",
+      onClick: onOpenPlan,
+    });
+  }
+
+  if (permissionMode === "always-approve") {
+    chips.push({
+      key: "perms",
+      label: "Always approve",
+      title: "Tools auto-allowed for this tab — agent hooks still apply",
+      className:
+        "bg-[var(--warning)]/15 text-[var(--warning)]",
+    });
+  }
+
+  if (reviewNoteCount > 0) {
+    chips.push({
+      key: "notes",
+      label: `${reviewNoteCount} review note${reviewNoteCount === 1 ? "" : "s"}`,
+      title: "Will attach to the next immediate send",
+      className:
+        "bg-[var(--warning)]/15 text-[var(--warning)] hover:bg-[var(--warning)]/25",
+      onClick: onOpenDiff,
+    });
+  }
+
+  if (modelLabel) {
+    const effort = effortLabel ? ` · ${effortLabel}` : "";
+    chips.push({
+      key: "model",
+      label: `${modelLabel}${effort}`,
+      title: "Active model / effort for this session",
+      className: "bg-[var(--bg-panel)] text-[var(--text-muted)]",
+    });
+  }
+
+  if (chips.length === 0 && !onSendReviewNotes) return null;
+
+  return (
+    <div
+      className="mb-2 flex flex-wrap items-center gap-1.5"
+      aria-label="Composer context"
+    >
+      {chips.map((c) =>
+        c.onClick ? (
+          <button
+            key={c.key}
+            type="button"
+            onClick={c.onClick}
+            title={c.title}
+            className={`rounded-full px-2 py-0.5 text-[10px] font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${c.className}`}
+          >
+            {c.label}
+          </button>
+        ) : (
+          <span
+            key={c.key}
+            title={c.title}
+            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${c.className}`}
+          >
+            {c.label}
+          </span>
+        ),
+      )}
+      {reviewNoteCount > 0 && onSendReviewNotes && (
+        <button
+          type="button"
+          onClick={onSendReviewNotes}
+          disabled={busy}
+          title={
+            busy
+              ? "Queue review notes for after this turn"
+              : "Send review notes now (no extra message required)"
+          }
+          className="rounded-full border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-2 py-0.5 text-[10px] font-medium text-[var(--warning)] hover:bg-[var(--warning)]/20 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        >
+          {busy ? "Queue notes" : "Send notes now"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function Composer({
   busy,
@@ -66,6 +196,7 @@ export function Composer({
   onUndismissSlash,
   onSend,
   onCancel,
+  context,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -82,6 +213,8 @@ export function Composer({
           onClearAll={onClearQueue}
           onRemove={onRemoveQueued}
         />
+
+        {context && <ContextStrip context={context} />}
 
         {pendingImages.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
