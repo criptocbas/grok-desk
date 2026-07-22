@@ -33,6 +33,7 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 - **Permission mode** is a Desk per-tab policy: `always-approve` auto-answers `session/request_permission` with an allow option (agent still enforces deny rules/hooks).
 - **Background notifications** via `notify-send` when a non-active tab finishes a turn or needs permission.
 - **Activity feed** derives from `tool_call` / `tool_call_update` plus Grok extensions `task_backgrounded` / `task_completed`, and **first-class subagents** via `subagent_spawned` / `subagent_finished` (plus defensive `turn_completed`). Caps tool/subagent history; never stores full terminal logs or child thoughts in the UI.
+- **Session updates** are accepted as both ACP `session/update` and Grok `_x.ai/session/update` (subagent lifecycle uses the extension method).
 - **Watching strip** appears above the composer when subagents or background tasks still run (including after the parent turn ends).
 - **Pinned sessions** are Desk UI bookmarks (not Grok session storage). Content still resumes via `session/load` from `~/.grok/sessions`.
 

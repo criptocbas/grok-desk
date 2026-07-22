@@ -984,17 +984,23 @@ fn handle_line(agent: &SharedAgent, app: &AppHandle, line: &str) {
     }
 
     if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-        match method {
-            "session/update" => {
-                let params = msg.get("params").cloned().unwrap_or(Value::Null);
-                let _ = app.emit("acp://session-update", params);
-            }
-            _ => {
-                let _ = app.emit(
-                    "acp://notification",
-                    json!({ "method": method, "params": msg.get("params") }),
-                );
-            }
+        // Standard ACP + Grok extension form. Subagent lifecycle
+        // (`subagent_spawned` / `subagent_finished`) is emitted as
+        // `_x.ai/session/update` with the same params shape as `session/update`.
+        // Dropping the extension method made Desk only show spawn *tools*
+        // (12ms "completed") while real child work was invisible.
+        let is_session_update = matches!(
+            method,
+            "session/update" | "_x.ai/session/update" | "x.ai/session/update"
+        );
+        if is_session_update {
+            let params = msg.get("params").cloned().unwrap_or(Value::Null);
+            let _ = app.emit("acp://session-update", params);
+        } else {
+            let _ = app.emit(
+                "acp://notification",
+                json!({ "method": method, "params": msg.get("params") }),
+            );
         }
     }
 }

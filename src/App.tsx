@@ -914,7 +914,11 @@ export default function App() {
         const title = tool?.title || "tool";
         const status = tool?.status || "in_progress";
         const kindStr = tool?.kind;
-        const skipTranscriptTool = isSpawnSubagentTool(tool?.name, title);
+        const skipTranscriptTool = isSpawnSubagentTool(
+          tool?.name,
+          title,
+          update,
+        );
 
         if (!id && kind === "tool_call_update") return;
 
@@ -924,7 +928,11 @@ export default function App() {
           const tTitle = t?.title || title;
           const tStatus = t?.status || status;
           // spawn_subagent lifecycle lives in role:"subagent" cards — skip tool spam
-          if (skipTranscriptTool || isSpawnSubagentTool(t?.name, tTitle)) {
+          if (
+            skipTranscriptTool ||
+            isSpawnSubagentTool(t?.name, tTitle, t?.raw ?? update) ||
+            t?.category === "subagent"
+          ) {
             return {
               ...s,
               tools: nextTools,

@@ -520,9 +520,30 @@ export function parseSubagentFinished(
 export function isSpawnSubagentTool(
   name?: string,
   title?: string,
+  raw?: unknown,
 ): boolean {
   const s = `${name || ""} ${title || ""}`.toLowerCase();
-  return s.includes("spawn_subagent");
+  if (s.includes("spawn_subagent") || s.includes("task tool")) return true;
+  // Grok often renames the title to the description ("Linux POV") while kind stays Other.
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  const meta = o?._meta && typeof o._meta === "object" ? (o._meta as Record<string, unknown>) : null;
+  const xai = meta?.["x.ai/tool"] && typeof meta["x.ai/tool"] === "object"
+    ? (meta["x.ai/tool"] as Record<string, unknown>)
+    : null;
+  if (typeof xai?.name === "string" && xai.name.toLowerCase().includes("spawn_subagent")) {
+    return true;
+  }
+  const ri =
+    (o?.rawInput && typeof o.rawInput === "object"
+      ? (o.rawInput as Record<string, unknown>)
+      : null) ||
+    (o?.raw_input && typeof o.raw_input === "object"
+      ? (o.raw_input as Record<string, unknown>)
+      : null);
+  if (ri && (ri.variant === "Task" || ri.subagent_type || ri.subagentType)) {
+    return true;
+  }
+  return false;
 }
 
 /** Short type label for chips. */
