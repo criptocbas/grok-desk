@@ -195,16 +195,28 @@ export function upsertToolCall(
   const terminal = isToolDone(status);
   const title = preferTitle(prev?.title, meta.title);
 
+  // Sticky subagent category — later updates retitle to description ("Linux POV")
+  // and would otherwise reclassify as a plain tool.
+  const mergedName = meta.name || prev?.name;
+  const mergedTitle = title;
+  const forceSub =
+    prev?.category === "subagent" ||
+    meta.category === "subagent" ||
+    isSpawnSubagentTool(mergedName, mergedTitle, update);
+  const category: ToolCallItem["category"] = forceSub
+    ? "subagent"
+    : meta.category || prev?.category || "tool";
+
   const next: ToolCallItem = {
     id: meta.id,
     title,
-    name: meta.name || prev?.name,
+    name: mergedName,
     kind: meta.kind || prev?.kind,
     status,
     startedAt: prev?.startedAt ?? now,
     endedAt: terminal ? (prev?.endedAt ?? now) : prev?.endedAt,
     detail: meta.detail || prev?.detail,
-    category: meta.category || prev?.category || "tool",
+    category,
     locations: meta.locations || prev?.locations,
     // Keep last payload but don't accumulate huge content
     raw: slimRaw(update),
@@ -533,6 +545,8 @@ export function isSpawnSubagentTool(
   if (typeof xai?.name === "string" && xai.name.toLowerCase().includes("spawn_subagent")) {
     return true;
   }
+  const label = typeof xai?.label === "string" ? xai.label.toLowerCase() : "";
+  if (label === "subagent" || label.includes("subagent")) return true;
   const ri =
     (o?.rawInput && typeof o.rawInput === "object"
       ? (o.rawInput as Record<string, unknown>)
@@ -540,10 +554,153 @@ export function isSpawnSubagentTool(
     (o?.raw_input && typeof o.raw_input === "object"
       ? (o.raw_input as Record<string, unknown>)
       : null);
-  if (ri && (ri.variant === "Task" || ri.subagent_type || ri.subagentType)) {
-    return true;
+  if (
+    ri &&
+    (ri.variant === "Task" ||
+      ri.subagent_type ||
+      ri.subagentType ||
+      (typeof ri.prompt === "string" &&
+        typeof ri.description === "string" &&
+        (ri.background === true || ri.subagent_type || ri.subagentType)))
+  ) {
+    // Heuristic: spawn_subagent rawInput always has description + prompt
+    if (typeof ri.description === "string" && typeof ri.prompt === "string") {
+      return true;
+    }
+    if (ri.variant === "Task" || ri.subagent_type || ri.subagentType) return true;
   }
+  // Tool result text from background spawn
+  const contentText = extractToolContentText(o);
+  if (contentText && /subagent_id\s*:/i.test(contentText)) return true;
   return false;
+}
+
+/** Pull plain text from ACP tool content blocks. */
+export function extractToolContentText(
+  update: Record<string, unknown> | null,
+): string {
+  if (!update) return "";
+  const content = update.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) {
+    const rawOut = asRecord(update.rawOutput) || asRecord(update.raw_output);
+    if (rawOut && typeof rawOut.text === "string") return rawOut.text;
+    return "";
+  }
+  const parts: string[] = [];
+  for (const block of content) {
+    const b = asRecord(block);
+    if (!b) continue;
+    if (typeof b.text === "string") parts.push(b.text);
+    const inner = asRecord(b.content);
+    if (inner && typeof inner.text === "string") parts.push(inner.text);
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Build / refresh a SubagentItem from a spawn_subagent tool_call(_update).
+ * Works even when `_x.ai/session/update` subagent_* events never reach the UI.
+ */
+export function subagentFromSpawnTool(
+  update: Record<string, unknown>,
+  now = Date.now(),
+): (Partial<SubagentItem> & { subagentId: string }) | null {
+  const toolCallId =
+    (typeof update.toolCallId === "string" && update.toolCallId) ||
+    (typeof update.tool_call_id === "string" && update.tool_call_id) ||
+    "";
+  const title =
+    (typeof update.title === "string" && update.title) || undefined;
+  const metaRoot = asRecord(update._meta);
+  const xaiTool = asRecord(metaRoot?.["x.ai/tool"]);
+  const name =
+    (typeof xaiTool?.name === "string" && xaiTool.name) ||
+    (typeof update.tool === "string" && update.tool) ||
+    title;
+
+  if (!isSpawnSubagentTool(name, title, update) && !toolCallId) return null;
+  if (!isSpawnSubagentTool(name, title, update)) {
+    // Only treat as spawn when detection agrees
+    return null;
+  }
+
+  const ri =
+    asRecord(update.rawInput) ||
+    asRecord(update.raw_input) ||
+    asRecord(xaiTool?.input) ||
+    {};
+
+  const contentText = extractToolContentText(update);
+  const idFromContent =
+    contentText.match(/subagent_id\s*:\s*([^\s\n]+)/i)?.[1] ||
+    contentText.match(/task_ids?\s*[:=]\s*\[?\s*"([a-f0-9-]+)"/i)?.[1];
+
+  const subagentId =
+    idFromContent ||
+    (toolCallId ? `pending:${toolCallId}` : "") ||
+    "";
+  if (!subagentId) return null;
+
+  const description =
+    (typeof ri.description === "string" && ri.description) ||
+    (title && !/^spawn_subagent$/i.test(title) ? title : null) ||
+    "Subagent";
+
+  const subagentType =
+    (typeof ri.subagent_type === "string" && ri.subagent_type) ||
+    (typeof ri.subagentType === "string" && ri.subagentType) ||
+    contentText.match(/type\s*:\s*([^\s\n]+)/i)?.[1] ||
+    undefined;
+
+  // Background spawn tool completes quickly while the child keeps running.
+  const toolStatus = normalizeToolStatus(
+    typeof update.status === "string" ? update.status : undefined,
+  );
+  const background =
+    ri.background === true ||
+    /started in background/i.test(contentText) ||
+    /background/i.test(contentText);
+  let status: SubagentStatus = "running";
+  if (isToolDone(toolStatus) && !background && idFromContent) {
+    // Blocking spawn finished with the tool — treat as completed only if not bg
+    status = toolStatus === "failed" ? "failed" : "completed";
+  }
+
+  return {
+    subagentId,
+    toolCallId: toolCallId || undefined,
+    childSessionId: idFromContent || undefined,
+    description: truncate(description, DETAIL_MAX),
+    subagentType,
+    status,
+    startedAt: now,
+    endedAt: status === "running" ? undefined : now,
+  };
+}
+
+/** Prefer real subagent ids over pending:toolCallId placeholders with same description. */
+export function reconcileSubagentList(
+  list: SubagentItem[],
+  incoming: Partial<SubagentItem> & { subagentId: string },
+): SubagentItem[] {
+  let next = list;
+  if (!incoming.subagentId.startsWith("pending:")) {
+    next = next.filter(
+      (s) =>
+        !(
+          s.subagentId.startsWith("pending:") &&
+          s.description === incoming.description
+        ),
+    );
+    // Also drop pending that shares toolCallId
+    if (incoming.toolCallId) {
+      next = next.filter(
+        (s) => s.subagentId !== `pending:${incoming.toolCallId}`,
+      );
+    }
+  }
+  return upsertSubagent(next, incoming);
 }
 
 /** Short type label for chips. */

@@ -54,6 +54,8 @@ import {
   parseSubagentSpawned,
   parseTaskBackgrounded,
   parseTaskCompleted,
+  reconcileSubagentList,
+  subagentFromSpawnTool,
   upsertBackgroundTask,
   upsertSubagent,
   upsertToolCall,
@@ -902,52 +904,91 @@ export default function App() {
         }
       } else if (kind === "tool_call" || kind === "tool_call_update") {
         const planFromTool = planFromTodoInput(update.rawInput ?? update);
-        const prevTools =
-          sessionsRef.current.find((s) => s.sessionId === sessionId)?.tools ??
-          [];
-        const tools = upsertToolCall(prevTools, update, Date.now());
         const id =
           (update.toolCallId as string) ||
           (update.tool_call_id as string) ||
           "";
-        const tool = tools.find((t) => t.id === id);
-        const title = tool?.title || "tool";
-        const status = tool?.status || "in_progress";
-        const kindStr = tool?.kind;
-        const skipTranscriptTool = isSpawnSubagentTool(
-          tool?.name,
-          title,
-          update,
-        );
 
         if (!id && kind === "tool_call_update") return;
+
+        // Fallback path: synthesize SubagentItem from spawn tool payloads even if
+        // `_x.ai/session/update` subagent_* events never arrive on the wire.
+        const fromSpawn = subagentFromSpawnTool(update, Date.now());
+        if (fromSpawn) {
+          setInspectorTab((tab) => tab ?? "activity");
+        }
 
         patchSession(sessionId, (s) => {
           const nextTools = upsertToolCall(s.tools, update, Date.now());
           const t = nextTools.find((x) => x.id === id);
-          const tTitle = t?.title || title;
-          const tStatus = t?.status || status;
-          // spawn_subagent lifecycle lives in role:"subagent" cards — skip tool spam
-          if (
-            skipTranscriptTool ||
-            isSpawnSubagentTool(t?.name, tTitle, t?.raw ?? update) ||
-            t?.category === "subagent"
-          ) {
+          const tTitle = t?.title || "tool";
+          const tStatus = t?.status || "in_progress";
+          const isSpawn =
+            !!fromSpawn ||
+            t?.category === "subagent" ||
+            isSpawnSubagentTool(t?.name, tTitle, t?.raw ?? update);
+
+          let subagents = s.subagents ?? [];
+          let items = s.items;
+
+          if (fromSpawn) {
+            subagents = reconcileSubagentList(subagents, fromSpawn);
+            const cardId = `subagent-${fromSpawn.subagentId}`;
+            // Drop provisional card if we just got a real id
+            const pendingCard = fromSpawn.toolCallId
+              ? `subagent-pending:${fromSpawn.toolCallId}`
+              : null;
+            const metaParts = [
+              fromSpawn.status ?? "running",
+              fromSpawn.subagentType,
+            ].filter(Boolean);
+            const card = {
+              id: cardId,
+              role: "subagent" as const,
+              text: fromSpawn.description || tTitle,
+              meta: metaParts.join(" · "),
+              status: fromSpawn.status ?? "running",
+              subagentId: fromSpawn.subagentId,
+            };
+            items = items
+              .filter(
+                (i) =>
+                  i.id !== `tool-${id}` &&
+                  i.id !== pendingCard &&
+                  // replace older pending card with same description
+                  !(
+                    i.role === "subagent" &&
+                    i.text === card.text &&
+                    i.id.startsWith("subagent-pending:")
+                  ),
+              )
+              .map((i) => (i.id === cardId ? { ...i, ...card } : i));
+            if (!items.some((i) => i.id === cardId)) {
+              items = [...items, card];
+            }
+          }
+
+          if (isSpawn) {
+            // Strip any tool bubble that already leaked into the transcript
+            items = items.filter((i) => i.id !== `tool-${id}`);
             return {
               ...s,
               tools: nextTools,
+              subagents,
+              items,
               plan: planFromTool ?? s.plan,
             };
           }
-          const items = s.items.some((i) => i.id === `tool-${id}`)
-            ? s.items.map((i) =>
+
+          const nextItems = items.some((i) => i.id === `tool-${id}`)
+            ? items.map((i) =>
                 i.id === `tool-${id}`
                   ? { ...i, text: tTitle, meta: tStatus, status: tStatus }
                   : i,
               )
             : id
               ? [
-                  ...s.items,
+                  ...items,
                   {
                     id: `tool-${id}`,
                     role: "tool" as const,
@@ -956,14 +997,24 @@ export default function App() {
                     status: tStatus,
                   },
                 ]
-              : s.items;
+              : items;
           return {
             ...s,
             tools: nextTools,
-            items,
+            subagents,
+            items: nextItems,
             plan: planFromTool ?? s.plan,
           };
         });
+
+        const prevTools =
+          sessionsRef.current.find((s) => s.sessionId === sessionId)?.tools ??
+          [];
+        const tools = upsertToolCall(prevTools, update, Date.now());
+        const tool = tools.find((t) => t.id === id);
+        const title = tool?.title || "tool";
+        const status = tool?.status || "in_progress";
+        const kindStr = tool?.kind;
         if (isToolDone(status) && isMutatingTool(title, kindStr)) {
           scheduleGitRefresh(sessionId);
         }
@@ -972,7 +1023,7 @@ export default function App() {
         if (!spawned) return;
         setInspectorTab((t) => t ?? "activity");
         patchSession(sessionId, (s) => {
-          const subagents = upsertSubagent(s.subagents ?? [], spawned);
+          const subagents = reconcileSubagentList(s.subagents ?? [], spawned);
           const cardId = `subagent-${spawned.subagentId}`;
           const metaParts = [
             "running",
@@ -983,8 +1034,19 @@ export default function App() {
               : null,
           ].filter(Boolean);
           const meta = metaParts.join(" · ");
-          const items = s.items.some((i) => i.id === cardId)
-            ? s.items.map((i) =>
+          // Drop tool spam + pending placeholders for this description
+          let items = s.items.filter(
+            (i) =>
+              !(i.role === "tool" && i.text === spawned.description) &&
+              !(
+                i.role === "subagent" &&
+                i.text === spawned.description &&
+                typeof i.id === "string" &&
+                i.id.startsWith("subagent-pending:")
+              ),
+          );
+          items = items.some((i) => i.id === cardId)
+            ? items.map((i) =>
                 i.id === cardId
                   ? {
                       ...i,
@@ -996,7 +1058,7 @@ export default function App() {
                   : i,
               )
             : [
-                ...s.items,
+                ...items,
                 {
                   id: cardId,
                   role: "subagent" as const,
