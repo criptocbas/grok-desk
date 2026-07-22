@@ -55,7 +55,9 @@ import {
   parseTaskBackgrounded,
   parseTaskCompleted,
   completeSubagentsFromWaitTool,
+  extractSpawnDescription,
   reconcileSubagentList,
+  subagentDisplayTitle,
   subagentFromSpawnTool,
   upsertBackgroundTask,
   upsertToolCall,
@@ -932,38 +934,59 @@ export default function App() {
           let items = s.items;
 
           if (fromSpawn) {
-            subagents = reconcileSubagentList(subagents, fromSpawn);
-            const cardId = `subagent-${fromSpawn.subagentId}`;
-            // Drop provisional card if we just got a real id
-            const pendingCard = fromSpawn.toolCallId
-              ? `subagent-pending:${fromSpawn.toolCallId}`
+            // Prefer description from this update; fall back to tool title if strong.
+            const label =
+              fromSpawn.description ||
+              extractSpawnDescription(update) ||
+              (tTitle &&
+              tTitle !== "spawn_subagent" &&
+              tTitle.toLowerCase() !== "subagent"
+                ? tTitle
+                : undefined) ||
+              fromSpawn.description;
+            const patch = label
+              ? { ...fromSpawn, description: label }
+              : fromSpawn;
+            subagents = reconcileSubagentList(subagents, patch);
+            const row = subagents.find(
+              (x) => x.subagentId === patch.subagentId,
+            );
+            const cardId = `subagent-${patch.subagentId}`;
+            const pendingCard = patch.toolCallId
+              ? `subagent-pending:${patch.toolCallId}`
               : null;
+            const title = row
+              ? subagentDisplayTitle(row)
+              : label || tTitle || "Subagent";
             const metaParts = [
-              fromSpawn.status ?? "running",
-              fromSpawn.subagentType,
+              patch.status ?? row?.status ?? "running",
+              patch.subagentType || row?.subagentType,
             ].filter(Boolean);
             const card = {
               id: cardId,
               role: "subagent" as const,
-              text: fromSpawn.description || tTitle,
+              text: title,
               meta: metaParts.join(" · "),
-              status: fromSpawn.status ?? "running",
-              subagentId: fromSpawn.subagentId,
+              status: patch.status ?? row?.status ?? "running",
+              subagentId: patch.subagentId,
             };
             items = items
               .filter(
                 (i) =>
                   i.id !== `tool-${id}` &&
                   i.id !== pendingCard &&
-                  // replace older pending card with same description
                   !(
                     i.role === "subagent" &&
-                    i.text === card.text &&
+                    i.subagentId === patch.subagentId &&
                     i.id.startsWith("subagent-pending:")
                   ),
               )
-              .map((i) => (i.id === cardId ? { ...i, ...card } : i));
-            if (!items.some((i) => i.id === cardId)) {
+              .map((i) =>
+                i.id === cardId || i.subagentId === patch.subagentId
+                  ? { ...i, ...card }
+                  : i,
+              );
+            if (!items.some((i) => i.subagentId === patch.subagentId)) {
               items = [...items, card];
             }
           }
@@ -971,7 +994,7 @@ export default function App() {
           // Wait / get_output completion → mark children done (finish fallback)
           subagents = completeSubagentsFromWaitTool(subagents, update, Date.now());
 
-          // Sync transcript cards to latest subagent statuses
+          // Sync transcript cards to latest subagent titles + statuses
           items = items.map((i) => {
             if (i.role !== "subagent" || !i.subagentId) return i;
             const row = subagents.find((x) => x.subagentId === i.subagentId);
@@ -990,7 +1013,7 @@ export default function App() {
             return {
               ...i,
               id: `subagent-${row.subagentId}`,
-              text: row.description || i.text,
+              text: subagentDisplayTitle(row),
               meta: metaParts.join(" · "),
               status: row.status,
               subagentId: row.subagentId,
@@ -1053,7 +1076,11 @@ export default function App() {
         setInspectorTab((t) => t ?? "activity");
         patchSession(sessionId, (s) => {
           const subagents = reconcileSubagentList(s.subagents ?? [], spawned);
+          const row = subagents.find((x) => x.subagentId === spawned.subagentId);
           const cardId = `subagent-${spawned.subagentId}`;
+          const title = row
+            ? subagentDisplayTitle(row)
+            : spawned.description || "Subagent";
           const metaParts = [
             "running",
             spawned.subagentType,
@@ -1069,34 +1096,29 @@ export default function App() {
               !(i.role === "tool" && i.text === spawned.description) &&
               !(
                 i.role === "subagent" &&
-                i.text === spawned.description &&
+                (i.subagentId === spawned.subagentId ||
+                  i.text === spawned.description) &&
                 typeof i.id === "string" &&
                 i.id.startsWith("subagent-pending:")
               ),
           );
-          items = items.some((i) => i.id === cardId)
+          const card = {
+            id: cardId,
+            role: "subagent" as const,
+            text: title,
+            meta,
+            status: "running" as const,
+            subagentId: spawned.subagentId,
+          };
+          items = items.some(
+            (i) => i.id === cardId || i.subagentId === spawned.subagentId,
+          )
             ? items.map((i) =>
-                i.id === cardId
-                  ? {
-                      ...i,
-                      text: spawned.description,
-                      meta,
-                      status: "running",
-                      subagentId: spawned.subagentId,
-                    }
+                i.id === cardId || i.subagentId === spawned.subagentId
+                  ? { ...i, ...card }
                   : i,
               )
-            : [
-                ...items,
-                {
-                  id: cardId,
-                  role: "subagent" as const,
-                  text: spawned.description,
-                  meta,
-                  status: "running",
-                  subagentId: spawned.subagentId,
-                },
-              ];
+            : [...items, card];
           return { ...s, subagents, items };
         });
       } else if (kind === "subagent_finished") {
@@ -1110,7 +1132,10 @@ export default function App() {
             status: fin.status || "completed",
           });
           const row = subagents.find((x) => x.subagentId === fin.subagentId);
-          finishedDesc = row?.description || finishedDesc;
+          const finishTitle = row
+            ? subagentDisplayTitle(row)
+            : finishedDesc;
+          finishedDesc = finishTitle;
           const st = row?.status || fin.status || "completed";
           const dur =
             row?.durationMs != null
@@ -1130,24 +1155,29 @@ export default function App() {
               return {
                 ...i,
                 id: cardId,
-                text: row?.description || i.text,
+                text: finishTitle,
                 meta: metaParts.join(" · "),
                 status: st,
                 subagentId: fin.subagentId,
               };
             }
-            // pending card with same description
+            // Fold pending / same-description running cards into the finished id
             if (
               i.role === "subagent" &&
-              row?.description &&
-              i.text === row.description &&
+              row &&
+              (i.subagentId === `pending:${row.toolCallId}` ||
+                i.text === row.description ||
+                (i.text === "Subagent" &&
+                  row.toolCallId &&
+                  i.subagentId === `pending:${row.toolCallId}`)) &&
               (i.status === "running" ||
-                String(i.id).startsWith("subagent-pending:"))
+                String(i.id).startsWith("subagent-pending:") ||
+                String(i.subagentId || "").startsWith("pending:"))
             ) {
               return {
                 ...i,
                 id: cardId,
-                text: row.description,
+                text: finishTitle,
                 meta: metaParts.join(" · "),
                 status: st,
                 subagentId: fin.subagentId,
@@ -1161,7 +1191,7 @@ export default function App() {
               {
                 id: cardId,
                 role: "subagent" as const,
-                text: row?.description || "Subagent",
+                text: finishTitle,
                 meta: metaParts.join(" · "),
                 status: st,
                 subagentId: fin.subagentId,

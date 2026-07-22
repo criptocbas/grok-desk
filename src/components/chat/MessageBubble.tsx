@@ -60,8 +60,11 @@ export function MessageBubble({ item }: { item: ChatItem }) {
           <span className="mono shrink-0 rounded bg-[var(--thought)]/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[var(--thought)]">
             sub
           </span>
-          <span className="min-w-0 flex-1 truncate font-medium text-[var(--text)]">
-            {item.text || "Subagent"}
+          <span
+            className="min-w-0 flex-1 truncate font-medium text-[var(--text)]"
+            title={item.text || "Subagent"}
+          >
+            {item.text?.trim() || "Subagent"}
           </span>
           {item.meta && (
             <span className={`mono shrink-0 text-[10px] ${statusColor}`}>

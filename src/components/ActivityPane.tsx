@@ -16,6 +16,7 @@ import {
   isToolFailed,
   isToolRunning,
   kindAccentClass,
+  subagentDisplayTitle,
   subagentTypeChip,
 } from "../activity";
 import { shortId } from "../lib/format";
@@ -381,6 +382,7 @@ function SubagentRow({
         : null;
   const dur = formatDuration(ms ?? undefined);
   const chip = subagentTypeChip(sub.subagentType);
+  const title = subagentDisplayTitle(sub);
 
   return (
     <li>
@@ -388,13 +390,14 @@ function SubagentRow({
         type="button"
         onClick={onToggle}
         className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-[var(--bg-hover)]"
+        title={title}
       >
         <div className="flex items-center gap-1.5">
           <span className="mono shrink-0 rounded bg-[var(--thought)]/15 px-1 py-0.5 text-[9px] uppercase text-[var(--thought)]">
             {chip}
           </span>
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--thought)]">
-            {sub.description}
+            {title}
           </span>
           <span
             className={`mono shrink-0 text-[10px] ${
@@ -411,15 +414,21 @@ function SubagentRow({
             {dur ? ` · ${dur}` : ""}
           </span>
         </div>
-        {(sub.model || sub.resumedFrom) && (
+        {(sub.model || sub.resumedFrom || sub.subagentType) && (
           <div className="mono truncate pl-1 text-[10px] text-[var(--text-faint)]">
-            {[sub.model, sub.resumedFrom ? "resumed" : null]
+            {[sub.subagentType, sub.model, sub.resumedFrom ? "resumed" : null]
               .filter(Boolean)
               .join(" · ")}
           </div>
         )}
         {expanded && (
           <div className="mt-0.5 space-y-0.5 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[10px] text-[var(--text-muted)]">
+            {sub.description && sub.description !== title && (
+              <div>
+                <span className="text-[var(--text-faint)]">task </span>
+                {sub.description}
+              </div>
+            )}
             {sub.subagentType && (
               <div>
                 <span className="text-[var(--text-faint)]">type </span>

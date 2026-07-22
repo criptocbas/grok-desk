@@ -361,6 +361,73 @@ export function countRunningBackground(tasks: BackgroundTaskItem[]): number {
   return tasks.filter((t) => t.status === "running").length;
 }
 
+/** True if a label is useless as a human row title. */
+export function isWeakSubagentLabel(s: string | undefined | null): boolean {
+  if (s == null) return true;
+  const t = s.trim();
+  if (!t) return true;
+  if (/^spawn_subagent$/i.test(t)) return true;
+  if (/^subagent$/i.test(t)) return true;
+  if (/^task$/i.test(t)) return true;
+  if (/^tool$/i.test(t)) return true;
+  if (/^other$/i.test(t)) return true;
+  return false;
+}
+
+/**
+ * Best human title for a subagent row / card.
+ * Prefer description → type chip label → short id — never a bare "Subagent" if we can avoid it.
+ */
+export function subagentDisplayTitle(
+  sub: Pick<SubagentItem, "description" | "subagentType" | "subagentId">,
+): string {
+  if (!isWeakSubagentLabel(sub.description)) return sub.description.trim();
+  if (sub.subagentType && !isWeakSubagentLabel(sub.subagentType)) {
+    return sub.subagentType;
+  }
+  if (sub.subagentId && !sub.subagentId.startsWith("pending:")) {
+    return `Subagent ${sub.subagentId.slice(0, 8)}`;
+  }
+  return "Subagent";
+}
+
+/**
+ * Pull a human description from a spawn tool_call / subagent_* update.
+ * Grok often renames the tool title to this string (e.g. "Linux POV").
+ */
+export function extractSpawnDescription(
+  update: Record<string, unknown>,
+): string | undefined {
+  const ri =
+    asRecord(update.rawInput) ||
+    asRecord(update.raw_input) ||
+    {};
+  const metaRoot = asRecord(update._meta);
+  const xaiTool = asRecord(metaRoot?.["x.ai/tool"]);
+  const xaiInput = asRecord(xaiTool?.input) || {};
+
+  const contentText = extractToolContentText(update);
+  const fromContent =
+    contentText.match(/^\s*description\s*:\s*(.+)$/im)?.[1]?.trim() ||
+    contentText.match(/\ndescription\s*:\s*(.+)/i)?.[1]?.trim();
+
+  const candidates: unknown[] = [
+    ri.description,
+    xaiInput.description,
+    update.description,
+    // Title after Grok renames spawn_subagent → "Linux POV"
+    update.title,
+    fromContent,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && !isWeakSubagentLabel(c)) {
+      return truncate(c.trim(), DETAIL_MAX);
+    }
+  }
+  return undefined;
+}
+
 export function normalizeSubagentStatus(
   status: string | undefined | null,
 ): SubagentStatus {
@@ -399,15 +466,13 @@ export function upsertSubagent(
   if (prevDone && patchStatus === "running") {
     status = prev!.status;
   }
+  // Prefer a strong human label; never let a weak patch erase a good prev title.
   const patchDesc = patch.description?.trim();
-  const weakDesc =
-    !patchDesc ||
-    patchDesc === "Subagent" ||
-    /^spawn_subagent$/i.test(patchDesc);
   const description = truncate(
-    (!weakDesc ? patchDesc : undefined) ||
-      prev?.description ||
+    (!isWeakSubagentLabel(patchDesc) ? patchDesc : undefined) ||
+      (!isWeakSubagentLabel(prev?.description) ? prev?.description : undefined) ||
       patchDesc ||
+      prev?.description ||
       "Subagent",
     DETAIL_MAX,
   );
@@ -454,7 +519,11 @@ export function parseSubagentSpawned(
   if (!subagentId) return null;
 
   const description =
-    (typeof update.description === "string" && update.description) ||
+    extractSpawnDescription(update) ||
+    (typeof update.description === "string" &&
+    !isWeakSubagentLabel(update.description)
+      ? update.description.trim()
+      : undefined) ||
     "Subagent";
 
   return {
@@ -671,10 +740,8 @@ export function subagentFromSpawnTool(
     "";
   if (!subagentId) return null;
 
-  const description =
-    (typeof ri.description === "string" && ri.description) ||
-    (title && !/^spawn_subagent$/i.test(title) ? title : null) ||
-    "Subagent";
+  // Prefer real spawn description ("Linux POV") over generic tool labels.
+  const description = extractSpawnDescription(update);
 
   const subagentType =
     (typeof ri.subagent_type === "string" && ri.subagent_type) ||
@@ -706,7 +773,8 @@ export function subagentFromSpawnTool(
     subagentId,
     toolCallId: toolCallId || undefined,
     childSessionId: idFromContent || idFromInput || undefined,
-    description: truncate(description, DETAIL_MAX),
+    // Omit weak labels so upsert keeps a better previous description.
+    description: description || undefined,
     subagentType,
     status,
     startedAt: now,
