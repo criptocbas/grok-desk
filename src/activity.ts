@@ -391,26 +391,46 @@ export function upsertSubagent(
   patch: Partial<SubagentItem> & { subagentId: string },
 ): SubagentItem[] {
   const prev = list.find((s) => s.subagentId === patch.subagentId);
-  const status = patch.status ?? prev?.status ?? "running";
+  // Never let later spawn-tool updates clobber a terminal finish back to "running".
+  const prevDone = prev ? isSubagentDone(prev.status) : false;
+  const patchStatus = patch.status;
+  let status: SubagentStatus =
+    patchStatus ?? prev?.status ?? "running";
+  if (prevDone && patchStatus === "running") {
+    status = prev!.status;
+  }
+  const patchDesc = patch.description?.trim();
+  const weakDesc =
+    !patchDesc ||
+    patchDesc === "Subagent" ||
+    /^spawn_subagent$/i.test(patchDesc);
+  const description = truncate(
+    (!weakDesc ? patchDesc : undefined) ||
+      prev?.description ||
+      patchDesc ||
+      "Subagent",
+    DETAIL_MAX,
+  );
   const next: SubagentItem = {
     subagentId: patch.subagentId,
     childSessionId: patch.childSessionId ?? prev?.childSessionId,
     parentSessionId: patch.parentSessionId ?? prev?.parentSessionId,
     toolCallId: patch.toolCallId ?? prev?.toolCallId,
-    description:
-      (patch.description
-        ? truncate(patch.description, DETAIL_MAX)
-        : undefined) ||
-      prev?.description ||
-      "Subagent",
+    description,
     subagentType: patch.subagentType ?? prev?.subagentType,
     model: patch.model ?? prev?.model,
     status,
     contextSource: patch.contextSource ?? prev?.contextSource,
     resumedFrom: patch.resumedFrom ?? prev?.resumedFrom,
     startedAt: patch.startedAt ?? prev?.startedAt ?? Date.now(),
-    endedAt: patch.endedAt ?? prev?.endedAt,
-    durationMs: patch.durationMs ?? prev?.durationMs,
+    endedAt:
+      prevDone && patchStatus === "running"
+        ? prev?.endedAt
+        : (patch.endedAt ?? prev?.endedAt),
+    durationMs:
+      prevDone && patchStatus === "running"
+        ? prev?.durationMs
+        : (patch.durationMs ?? prev?.durationMs),
     toolCalls: patch.toolCalls ?? prev?.toolCalls,
     turns: patch.turns ?? prev?.turns,
     tokensUsed: patch.tokensUsed ?? prev?.tokensUsed,
@@ -636,8 +656,17 @@ export function subagentFromSpawnTool(
     contentText.match(/subagent_id\s*:\s*([^\s\n]+)/i)?.[1] ||
     contentText.match(/task_ids?\s*[:=]\s*\[?\s*"([a-f0-9-]+)"/i)?.[1];
 
+  // Grok puts the real child id on tool updates as task_id (see rawInput).
+  const idFromInput =
+    (typeof ri.task_id === "string" && ri.task_id) ||
+    (typeof ri.taskId === "string" && ri.taskId) ||
+    (typeof ri.subagent_id === "string" && ri.subagent_id) ||
+    (typeof ri.subagentId === "string" && ri.subagentId) ||
+    undefined;
+
   const subagentId =
     idFromContent ||
+    idFromInput ||
     (toolCallId ? `pending:${toolCallId}` : "") ||
     "";
   if (!subagentId) return null;
@@ -654,29 +683,110 @@ export function subagentFromSpawnTool(
     undefined;
 
   // Background spawn tool completes quickly while the child keeps running.
+  // Do NOT claim completed from the spawn tool alone for background work.
+  // Omit status when unknown so upsert keeps a prior terminal status.
   const toolStatus = normalizeToolStatus(
     typeof update.status === "string" ? update.status : undefined,
   );
   const background =
     ri.background === true ||
-    /started in background/i.test(contentText) ||
-    /background/i.test(contentText);
-  let status: SubagentStatus = "running";
-  if (isToolDone(toolStatus) && !background && idFromContent) {
-    // Blocking spawn finished with the tool — treat as completed only if not bg
+    ri.run_in_background === true ||
+    ri.runInBackground === true ||
+    /started in background/i.test(contentText);
+  let status: SubagentStatus | undefined = "running";
+  if (isToolDone(toolStatus) && !background && (idFromContent || idFromInput)) {
     status = toolStatus === "failed" ? "failed" : "completed";
+  } else if (background) {
+    // Only assert running on first sight; later tool updates must not
+    // force running over an already-completed subagent (upsert guards too).
+    status = "running";
   }
 
   return {
     subagentId,
     toolCallId: toolCallId || undefined,
-    childSessionId: idFromContent || undefined,
+    childSessionId: idFromContent || idFromInput || undefined,
     description: truncate(description, DETAIL_MAX),
     subagentType,
     status,
     startedAt: now,
-    endedAt: status === "running" ? undefined : now,
+    endedAt: status && status !== "running" ? now : undefined,
   };
+}
+
+/**
+ * When wait / get_command_or_subagent_output completes, mark matching
+ * subagents completed (fallback if subagent_finished never arrives).
+ */
+export function completeSubagentsFromWaitTool(
+  list: SubagentItem[],
+  update: Record<string, unknown>,
+  now = Date.now(),
+): SubagentItem[] {
+  const title = String(update.title || "").toLowerCase();
+  const name = String(
+    (asRecord(asRecord(update._meta)?.["x.ai/tool"])?.name as string) || "",
+  ).toLowerCase();
+  const content = extractToolContentText(update);
+  const looksWait =
+    title.includes("wait") ||
+    title.includes("get task") ||
+    title.includes("multi-wait") ||
+    name.includes("get_command_or_subagent") ||
+    name.includes("wait_command") ||
+    name.includes("wait_commands");
+  if (!looksWait) return list;
+
+  const toolStatus = normalizeToolStatus(
+    typeof update.status === "string" ? update.status : undefined,
+  );
+  if (!isToolDone(toolStatus)) return list;
+
+  // Collect task/subagent ids mentioned in the wait result
+  const ids = new Set<string>();
+  for (const m of content.matchAll(
+    /(?:subagent_id|task_id|taskId)\s*[:=]\s*["']?([a-f0-9-]{8,})/gi,
+  )) {
+    ids.add(m[1]);
+  }
+  for (const m of content.matchAll(/["']([0-9a-f]{8}-[0-9a-f-]{20,})["']/gi)) {
+    ids.add(m[1]);
+  }
+  const ri = asRecord(update.rawInput) || asRecord(update.raw_input) || {};
+  const taskIds = ri.task_ids || ri.taskIds;
+  if (Array.isArray(taskIds)) {
+    for (const t of taskIds) {
+      if (typeof t === "string") ids.add(t);
+    }
+  }
+
+  // If wait finished and we know ids, complete those; if wait_all and no ids,
+  // complete every still-running subagent (parent just blocked on all of them).
+  const waitAll =
+    title.includes("wait_all") ||
+    title.includes("multi-wait") ||
+    ri.mode === "wait_all" ||
+    /wait_all/i.test(content);
+
+  return list.map((s) => {
+    if (!isSubagentRunning(s.status)) return s;
+    // For wait_all with extracted ids, only complete matched; if no ids, complete all running
+    const shouldComplete =
+      ids.size > 0
+        ? ids.has(s.subagentId) ||
+          (!!s.childSessionId && ids.has(s.childSessionId)) ||
+          (!!s.toolCallId && ids.has(s.toolCallId))
+        : waitAll;
+    if (!shouldComplete) return s;
+    return {
+      ...s,
+      status: toolStatus === "failed" ? "failed" : "completed",
+      endedAt: s.endedAt ?? now,
+      durationMs:
+        s.durationMs ??
+        (s.startedAt != null ? Math.max(0, now - s.startedAt) : undefined),
+    };
+  });
 }
 
 /** Prefer real subagent ids over pending:toolCallId placeholders with same description. */
@@ -686,18 +796,24 @@ export function reconcileSubagentList(
 ): SubagentItem[] {
   let next = list;
   if (!incoming.subagentId.startsWith("pending:")) {
-    next = next.filter(
+    // Fold pending rows into the real id (keep startedAt / description)
+    const pending = next.filter(
       (s) =>
-        !(
-          s.subagentId.startsWith("pending:") &&
-          s.description === incoming.description
-        ),
+        s.subagentId.startsWith("pending:") &&
+        (s.description === incoming.description ||
+          (!!incoming.toolCallId && s.toolCallId === incoming.toolCallId)),
     );
-    // Also drop pending that shares toolCallId
-    if (incoming.toolCallId) {
-      next = next.filter(
-        (s) => s.subagentId !== `pending:${incoming.toolCallId}`,
-      );
+    if (pending.length) {
+      const p0 = pending[0];
+      next = next.filter((s) => !pending.some((p) => p.subagentId === s.subagentId));
+      incoming = {
+        ...incoming,
+        description: incoming.description || p0.description,
+        toolCallId: incoming.toolCallId || p0.toolCallId,
+        subagentType: incoming.subagentType || p0.subagentType,
+        startedAt: p0.startedAt ?? incoming.startedAt,
+        model: incoming.model || p0.model,
+      };
     }
   }
   return upsertSubagent(next, incoming);
