@@ -59,6 +59,8 @@ type Props = {
   onCancel: () => void;
   /** Ambient context chips above the textarea. */
   context?: ComposerContext;
+  /** Responsive max-width class (matches transcript column). */
+  contentMaxClass?: string;
 };
 
 function ContextStrip({ context }: { context: ComposerContext }) {
@@ -197,6 +199,7 @@ export function Composer({
   onSend,
   onCancel,
   context,
+  contentMaxClass = "max-w-3xl",
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -206,7 +209,9 @@ export function Composer({
 
   return (
     <div className="border-t border-[var(--border)] bg-[var(--bg-elevated)] p-3">
-      <div className="mx-auto max-w-3xl">
+      <div
+        className={`mx-auto w-full transition-[max-width] duration-200 ease-out ${contentMaxClass}`}
+      >
         <PromptQueue
           queue={promptQueue}
           busy={busy}

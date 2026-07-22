@@ -6,6 +6,8 @@ type Props = {
   items: ChatItem[];
   onOpenActivity?: () => void;
   onRetryUser?: (text: string) => void;
+  /** Responsive max-width class (e.g. max-w-3xl / max-w-6xl). */
+  contentMaxClass?: string;
 };
 
 type Segment =
@@ -248,11 +250,14 @@ export function TranscriptList({
   items,
   onOpenActivity,
   onRetryUser,
+  contentMaxClass = "max-w-3xl",
 }: Props) {
   const segments = useMemo(() => groupTranscriptItems(items), [items]);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-3">
+    <div
+      className={`mx-auto w-full space-y-3 transition-[max-width] duration-200 ease-out ${contentMaxClass}`}
+    >
       {segments.map((seg) => {
         if (seg.kind === "item") {
           return (

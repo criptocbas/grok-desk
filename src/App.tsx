@@ -79,6 +79,7 @@ import {
   STALL_MS,
 } from "./lib/caps";
 import { extractText, folderName, shortId, uid } from "./lib/format";
+import { chatContentMaxClass } from "./lib/layout";
 import {
   parseAvailableCommands,
   parsePlanEntries,
@@ -2729,6 +2730,16 @@ export default function App() {
   const showJumpToLatest =
     !!active && stickTick >= 0 && !isStuckToBottom(active.sessionId);
 
+  /** Transcript + composer grow when rails free space. */
+  const chatMaxClass = useMemo(
+    () =>
+      chatContentMaxClass({
+        sidebarCollapsed,
+        inspectorOpen: inspectorTab != null,
+      }),
+    [sidebarCollapsed, inspectorTab],
+  );
+
   const slashMatch = useMemo(
     () => getSlashMatch(prompt, composerCursor),
     [prompt, composerCursor],
@@ -3118,10 +3129,13 @@ export default function App() {
                   <div
                     ref={scrollRef}
                     onScroll={onTranscriptScroll}
-                    className="h-full overflow-y-auto px-4 py-4"
+                    className={`h-full overflow-y-auto py-4 ${
+                      sidebarCollapsed && !inspectorTab ? "px-6" : "px-4"
+                    }`}
                   >
                     <TranscriptList
                       items={active.items}
+                      contentMaxClass={chatMaxClass}
                       onOpenActivity={() => setInspectorTab("activity")}
                       onRetryUser={retryUserPrompt}
                     />
@@ -3160,6 +3174,7 @@ export default function App() {
                 <Composer
                   busy={active.busy}
                   prompt={prompt}
+                  contentMaxClass={chatMaxClass}
                   onPromptChange={(value, cursor) => {
                     setPrompt(value);
                     setComposerCursor(cursor);
