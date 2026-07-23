@@ -53,6 +53,7 @@ Priority order is flexible; pick with the user:
 - [x] OS notifications when a background session finishes (and when a background tab needs permission)
 - [x] Design system foundation (`src/DESIGN.md` + token ladder, density hooks)
 - [x] Factor UI monolith (`App.tsx` → layout / chat / session components + `lib/*`)
+- [x] Split LeftNavigator (`navigator/*` sections) + unified session titles
 - [x] Three-surface shell: resizable utility rail (Plan · Diff · Activity · Settings)
 - [x] Pin drag-reorder (wires `reorder_pins`)
 - [x] Settings pane (theme / density / font / accent presets)
@@ -89,6 +90,9 @@ Priority order is flexible; pick with the user:
 
 - [ ] GrokLink Remote Commander (phone control, pairing, E2EE) — **not** next
 - [ ] Worktree-per-session toggle (also listed under Phase 1 nice-to-have)
+- [x] **Solana workhorse packaging (agent-first)** — docs, templates, workflows; **not** a Solana IDE UI  
+      See [`docs/solana-workhorse/`](./docs/solana-workhorse/). Domain panes only if dogfood scorecard demands them.
+- [ ] Solana domain UI experiment (gated) — cluster chip / IDL drawer **only** after dogfood ≥2 high-severity `domain-ui` items
 
 ## Non-goals (for now)
 
@@ -96,3 +100,5 @@ Priority order is flexible; pick with the user:
 - Official cloud remote sessions (self-host later)
 - Computer use / desktop control
 - Competing with grok.com chat chrome
+- Solana wallet custody / in-app signing
+- Forking Desk into a chain-specific IDE before generic terminal + file tree land

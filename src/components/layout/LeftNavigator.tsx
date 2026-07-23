@@ -10,8 +10,10 @@ import {
   countRunningSubagents,
   countRunningTools,
 } from "../../activity";
-import { folderName, formatTime, shortId } from "../../lib/format";
-import { SessionTitleLabel } from "../session/SessionTitleLabel";
+import { CollapsedRail } from "./navigator/CollapsedRail";
+import { PinsSection } from "./navigator/PinsSection";
+import { OpenSessionsSection } from "./navigator/OpenSessionsSection";
+import { RecentsSection } from "./navigator/RecentsSection";
 
 type Props = {
   collapsed: boolean;
@@ -56,6 +58,10 @@ type Props = {
   active: DeskSession | null;
 };
 
+/**
+ * Left mission-control rail — composition only.
+ * Section UIs live under `navigator/*`.
+ */
 export function LeftNavigator({
   collapsed,
   onToggleCollapse,
@@ -139,7 +145,6 @@ export function LeftNavigator({
     if (ungrouped.length > 0) {
       sections.push({
         groupId: null,
-        // Only label “Ungrouped” when some pins are also in named groups
         label: sections.length > 0 ? "Ungrouped" : null,
         items: ungrouped,
       });
@@ -168,89 +173,21 @@ export function LeftNavigator({
 
   if (collapsed) {
     return (
-      <aside
-        className="flex w-12 shrink-0 flex-col items-center border-r border-[var(--border)] bg-[var(--bg-panel)] py-2"
-        aria-label="Collapsed sidebar"
-      >
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          title="Expand sidebar (Ctrl+B / Alt+B)"
-          className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
-        >
-          ›
-        </button>
-        <div
-          className={`mb-2 h-2 w-2 rounded-full ${
-            running
-              ? active?.busy
-                ? "status-pulse bg-[var(--warning)]"
-                : "bg-[var(--success)]"
-              : "bg-[var(--text-faint)]"
-          }`}
-          title={headerStatus}
-        />
-        {!running ? (
-          <button
-            type="button"
-            onClick={() => void onConnect()}
-            disabled={connecting || !grokAvailable}
-            title="Connect"
-            className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent)] text-xs font-bold text-[var(--accent-fg)] disabled:opacity-40"
-          >
-            {connecting ? "…" : "C"}
-          </button>
-        ) : null}
-        <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-1">
-          {sessions.map((s) => {
-            const selected = s.sessionId === activeId;
-            const run = countRunningTools(s.tools);
-            const sub = countRunningSubagents(s.subagents ?? []);
-            const bg = countRunningBackground(s.backgroundTasks ?? []);
-            const live = run > 0 || sub > 0 || bg > 0;
-            return (
-              <button
-                key={s.sessionId}
-                type="button"
-                title={`${s.title}\n${s.cwd}`}
-                onClick={() => onSelectSession(s.sessionId, s.cwd)}
-                className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold ${
-                  selected
-                    ? "bg-[var(--bg-active)] text-[var(--accent)] ring-1 ring-[var(--accent)]/40"
-                    : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-                }`}
-              >
-                {(s.title || folderName(s.cwd)).slice(0, 1).toUpperCase()}
-                {s.busy || live ? (
-                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--warning)]" />
-                ) : isPinned(s.sessionId, s.cwd) ? (
-                  <span className="absolute bottom-0.5 right-0.5 text-[7px] text-[var(--accent)]">
-                    •
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-        {pins.length > 0 && sessions.length === 0 && (
-          <button
-            type="button"
-            onClick={onToggleCollapse}
-            title={`${pins.length} pinned — expand to open`}
-            className="mb-1 text-[10px] text-[var(--accent)]"
-          >
-            📌{pins.length}
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onToggleRecents}
-          title="Recents"
-          className="mt-auto flex h-8 w-8 items-center justify-center rounded-md text-[10px] text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-        >
-          ☰
-        </button>
-      </aside>
+      <CollapsedRail
+        running={running}
+        connecting={connecting}
+        grokAvailable={grokAvailable}
+        headerStatus={headerStatus}
+        active={active}
+        sessions={sessions}
+        activeId={activeId}
+        pins={pins}
+        isPinned={isPinned}
+        onToggleCollapse={onToggleCollapse}
+        onConnect={onConnect}
+        onSelectSession={onSelectSession}
+        onToggleRecents={onToggleRecents}
+      />
     );
   }
 
@@ -330,456 +267,85 @@ export function LeftNavigator({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        <div className="mb-3">
-          <div className="mb-1.5 flex items-center justify-between px-1">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-              Pinned
-            </span>
-            <span className="mono text-[10px] text-[var(--text-faint)]">
-              {resumingPins ? "…" : pins.length}
-            </span>
-          </div>
-          {pins.length === 0 ? (
-            <p className="px-2 text-[11px] leading-relaxed text-[var(--text-faint)]">
-              Pin a session to reopen it automatically after restart. Use 📌 on
-              a tab or in Recents. Assign a group under Open to organize pins.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {pinSections.map((section) => (
-                <div key={section.groupId ?? "__ungrouped"}>
-                  {section.label && (
-                    <div className="mb-0.5 flex items-center gap-1 px-1.5 pt-0.5">
-                      <span
-                        className="truncate text-[10px] font-semibold tracking-wide text-[var(--accent)]"
-                        title={
-                          section.groupId
-                            ? `Group: ${section.label}`
-                            : section.label
-                        }
-                      >
-                        {section.label}
-                      </span>
-                      <span className="mono text-[9px] text-[var(--text-faint)]">
-                        {section.items.length}
-                      </span>
-                    </div>
-                  )}
-                  <ul className="space-y-0.5">
-                    {section.items.map((p) => {
-                      const open = sessions.some(
-                        (s) => s.sessionId === p.sessionId,
-                      );
-                      const selected = p.sessionId === activeId;
-                      return (
-                        <li
-                          key={`${p.sessionId}:${p.cwd}`}
-                          draggable={!!onReorderPins}
-                          onDragStart={() => setDragPinId(p.sessionId)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={() => onPinDrop(p.sessionId)}
-                          onDragEnd={() => setDragPinId(null)}
-                          className={
-                            dragPinId === p.sessionId
-                              ? "opacity-50"
-                              : undefined
-                          }
-                        >
-                          <div
-                            className={`group flex w-full items-start gap-1 rounded-lg px-1.5 py-1.5 ${
-                              selected
-                                ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-                                : "hover:bg-[var(--bg-hover)]"
-                            } ${p.missing ? "opacity-60" : ""} ${
-                              onReorderPins
-                                ? "cursor-grab active:cursor-grabbing"
-                                : ""
-                            } ${section.groupId ? "ml-0.5 border-l-2 border-[var(--accent)]/25 pl-1" : ""}`}
-                          >
-                            <button
-                              type="button"
-                              disabled={p.missing && !open}
-                              title={
-                                p.missing
-                                  ? "Session missing on disk — unpin or resume failed"
-                                  : open
-                                    ? "Focus session"
-                                    : "Open pinned session"
-                              }
-                              onClick={() => {
-                                if (open) {
-                                  onSelectSession(p.sessionId, p.cwd);
-                                  return;
-                                }
-                                if (p.missing) return;
-                                onResumePin(p);
-                              }}
-                              className="flex min-w-0 flex-1 items-start gap-2 px-1 py-0.5 text-left disabled:cursor-not-allowed"
-                            >
-                              <span className="mt-1 shrink-0 text-[10px] text-[var(--accent)]">
-                                📌
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1 truncate text-[11px] font-medium">
-                                  <SessionTitleLabel
-                                    title={p.title || folderName(p.cwd)}
-                                    className="text-[11px] font-medium"
-                                    onRename={(next) =>
-                                      onRenameSession(p.sessionId, next)
-                                    }
-                                  />
-                                  {p.missing ? (
-                                    <span className="shrink-0 text-[10px] font-normal text-[var(--danger)]">
-                                      missing
-                                    </span>
-                                  ) : open ? (
-                                    <span className="shrink-0 text-[10px] font-normal text-[var(--success)]">
-                                      open
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <div className="mono truncate text-[10px] text-[var(--text-faint)]">
-                                  {folderName(p.cwd)} · {shortId(p.sessionId)}
-                                </div>
-                              </div>
-                            </button>
-                            <button
-                              type="button"
-                              title="Unpin"
-                              onClick={() =>
-                                void onUnpin(p.sessionId, p.cwd)
-                              }
-                              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-faint)] opacity-0 hover:bg-[var(--bg-hover)] hover:text-[var(--warning)] group-hover:opacity-100"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          )}
-          {resumingPins && (
-            <p className="mt-1 px-2 text-[10px] text-[var(--warning)]">
-              Restoring pinned sessions…
-            </p>
-          )}
-        </div>
+        <PinsSection
+          pins={pins}
+          pinSections={pinSections}
+          sessions={sessions}
+          activeId={activeId}
+          resumingPins={resumingPins}
+          dragPinId={dragPinId}
+          onDragPinId={setDragPinId}
+          onPinDrop={onPinDrop}
+          onReorderPins={onReorderPins}
+          onSelectSession={onSelectSession}
+          onResumePin={onResumePin}
+          onUnpin={onUnpin}
+          onRenameSession={onRenameSession}
+        />
 
-        <div className="mb-2 flex items-center justify-between border-t border-[var(--border)] px-1 pt-3">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-            Open
-          </span>
-          <div className="flex items-center gap-1">
-            <span className="mono text-[10px] text-[var(--text-faint)]">
-              {sessions.length}
-            </span>
-            <button
-              type="button"
-              title="New group"
-              aria-label="Create session group"
-              onClick={() => {
-                setNewGroupOpen((v) => !v);
-                setNewGroupName("");
-              }}
-              className="rounded px-1.5 text-[12px] text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]"
-            >
-              +
-            </button>
-          </div>
-        </div>
+        <OpenSessionsSection
+          sessions={sessions}
+          groups={groups}
+          sessionsByGroup={sessionsByGroup}
+          activeId={activeId}
+          isPinned={isPinned}
+          newGroupOpen={newGroupOpen}
+          newGroupName={newGroupName}
+          onNewGroupOpen={setNewGroupOpen}
+          onNewGroupName={setNewGroupName}
+          onCreateGroup={onCreateGroup}
+          renamingGroupId={renamingGroupId}
+          renameGroupDraft={renameGroupDraft}
+          onRenamingGroupId={setRenamingGroupId}
+          onRenameGroupDraft={setRenameGroupDraft}
+          onRenameGroup={onRenameGroup}
+          onDeleteGroup={onDeleteGroup}
+          onSetGroupCollapsed={onSetGroupCollapsed}
+          onSetGroupPinned={onSetGroupPinned}
+          onSelectSession={onSelectSession}
+          onCloseSession={onCloseSession}
+          onPin={onPin}
+          onUnpin={onUnpin}
+          onRenameSession={onRenameSession}
+          onSetSessionGroup={onSetSessionGroup}
+        />
 
-        {newGroupOpen && (
-          <div className="mb-2 flex gap-1 px-1">
-            <input
-              value={newGroupName}
-              onChange={(e) => setNewGroupName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && newGroupName.trim()) {
-                  onCreateGroup(newGroupName.trim());
-                  setNewGroupName("");
-                  setNewGroupOpen(false);
-                } else if (e.key === "Escape") {
-                  setNewGroupOpen(false);
-                }
-              }}
-              placeholder="Group name…"
-              className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-[11px] outline-none focus:border-[var(--accent)]"
-              autoFocus
-            />
-            <button
-              type="button"
-              disabled={!newGroupName.trim()}
-              onClick={() => {
-                if (!newGroupName.trim()) return;
-                onCreateGroup(newGroupName.trim());
-                setNewGroupName("");
-                setNewGroupOpen(false);
-              }}
-              className="rounded-md bg-[var(--accent)] px-2 py-1 text-[11px] font-medium text-[var(--accent-fg)] disabled:opacity-40"
-            >
-              Add
-            </button>
-          </div>
-        )}
-
-        {sessions.length === 0 && groups.length === 0 ? (
-          <p className="px-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-            Connect, open a session, or click a pin. Use + to create groups.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {groups.map((g) => {
-              const members = sessionsByGroup.get(g.id) ?? [];
-              const isCollapsed = !!g.collapsed;
-              return (
-                <div key={g.id}>
-                  <div className="group/hdr flex items-center gap-0.5 px-1 py-0.5">
-                    <button
-                      type="button"
-                      onClick={() => onSetGroupCollapsed(g.id, !isCollapsed)}
-                      className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-[var(--bg-hover)]"
-                    >
-                      <span className="text-[10px] text-[var(--text-faint)]">
-                        {isCollapsed ? "▸" : "▾"}
-                      </span>
-                      {g.pinned && (
-                        <span
-                          className="text-[10px] text-[var(--accent)]"
-                          title="Group pinned — members resume on Connect"
-                        >
-                          📌
-                        </span>
-                      )}
-                      {renamingGroupId === g.id ? (
-                        <input
-                          value={renameGroupDraft}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setRenameGroupDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            e.stopPropagation();
-                            if (e.key === "Enter") {
-                              onRenameGroup(g.id, renameGroupDraft);
-                              setRenamingGroupId(null);
-                            } else if (e.key === "Escape") {
-                              setRenamingGroupId(null);
-                            }
-                          }}
-                          onBlur={() => {
-                            onRenameGroup(g.id, renameGroupDraft);
-                            setRenamingGroupId(null);
-                          }}
-                          className="min-w-0 flex-1 rounded border border-[var(--accent)] bg-[var(--bg)] px-1 py-0.5 text-[11px] font-semibold outline-none"
-                          autoFocus
-                        />
-                      ) : (
-                        <span
-                          className="truncate text-[11px] font-semibold text-[var(--text-muted)]"
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            setRenamingGroupId(g.id);
-                            setRenameGroupDraft(g.name);
-                          }}
-                          title="Double-click to rename group"
-                        >
-                          {g.name}
-                        </span>
-                      )}
-                      <span className="mono shrink-0 text-[10px] text-[var(--text-faint)]">
-                        {members.length}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      title={
-                        g.pinned
-                          ? "Unpin group — members won’t auto-resume"
-                          : "Pin group — all members resume on Connect"
-                      }
-                      onClick={() => onSetGroupPinned(g.id, !g.pinned)}
-                      className={`rounded px-1 text-[11px] ${
-                        g.pinned
-                          ? "text-[var(--accent)]"
-                          : "text-[var(--text-faint)] opacity-0 hover:text-[var(--accent)] group-hover/hdr:opacity-100"
-                      }`}
-                    >
-                      📌
-                    </button>
-                    <button
-                      type="button"
-                      title="Delete group"
-                      onClick={() => {
-                        if (
-                          confirm(
-                            `Delete group “${g.name}”? Sessions stay open and become ungrouped.`,
-                          )
-                        ) {
-                          onDeleteGroup(g.id);
-                        }
-                      }}
-                      className="rounded px-1 text-[10px] text-[var(--text-faint)] opacity-0 hover:text-[var(--danger)] group-hover/hdr:opacity-100"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  {!isCollapsed && (
-                    <ul className="mt-0.5 space-y-0.5">
-                      {members.length === 0 ? (
-                        <li className="px-3 py-1 text-[10px] text-[var(--text-faint)]">
-                          Empty — assign a session with the folder menu
-                        </li>
-                      ) : (
-                        members.map((s) => (
-                          <SessionRow
-                            key={s.sessionId}
-                            s={s}
-                            selected={s.sessionId === activeId}
-                            pinned={isPinned(s.sessionId, s.cwd)}
-                            groups={groups}
-                            groupId={g.id}
-                            onSelectSession={onSelectSession}
-                            onCloseSession={onCloseSession}
-                            onPin={onPin}
-                            onUnpin={onUnpin}
-                            onRenameSession={onRenameSession}
-                            onSetSessionGroup={onSetSessionGroup}
-                          />
-                        ))
-                      )}
-                    </ul>
-                  )}
-                </div>
-              );
-            })}
-
-            <div>
-              {groups.length > 0 && (
-                <div className="mb-0.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
-                  Ungrouped
-                  <span className="mono ml-1 font-normal">
-                    {(sessionsByGroup.get(null) ?? []).length}
-                  </span>
-                </div>
-              )}
-              <ul className="space-y-0.5">
-                {(sessionsByGroup.get(null) ?? []).map((s) => (
-                  <SessionRow
-                    key={s.sessionId}
-                    s={s}
-                    selected={s.sessionId === activeId}
-                    pinned={isPinned(s.sessionId, s.cwd)}
-                    groups={groups}
-                    groupId={null}
-                    onSelectSession={onSelectSession}
-                    onCloseSession={onCloseSession}
-                    onPin={onPin}
-                    onUnpin={onUnpin}
-                    onRenameSession={onRenameSession}
-                    onSetSessionGroup={onSetSessionGroup}
-                  />
-                ))}
-                {sessions.length === 0 && (
-                  <li className="px-2 text-[12px] text-[var(--text-muted)]">
-                    No open sessions.
-                  </li>
-                )}
-              </ul>
-            </div>
-          </div>
-        )}
-
-        {showRecents && (
-          <div className="mt-4 border-t border-[var(--border)] pt-3">
-            <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-              From disk
-            </div>
-            <ul className="space-y-1">
-              {diskSessions.slice(0, 15).map((d) => {
-                const pinned = isPinned(d.sessionId, d.cwd);
-                return (
-                  <li
-                    key={d.sessionId}
-                    className="group flex items-start gap-0.5"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => void onResumeDisk(d)}
-                      disabled={!running && !grokAvailable}
-                      className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-                    >
-                      <div className="flex items-center gap-1 truncate text-[11px] font-medium">
-                        {pinned && (
-                          <span className="text-[var(--accent)]">📌</span>
-                        )}
-                        <SessionTitleLabel
-                          title={d.title || folderName(d.cwd)}
-                          className="text-[11px] font-medium"
-                          onRename={(next) =>
-                            onRenameSession(d.sessionId, next)
-                          }
-                        />
-                      </div>
-                      <div className="mono truncate text-[10px] text-[var(--text-muted)]">
-                        {folderName(d.cwd)} · {formatTime(d.updatedAt)}
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      title={pinned ? "Unpin" : "Pin session"}
-                      onClick={() => {
-                        if (pinned) {
-                          void onUnpin(d.sessionId, d.cwd);
-                        } else {
-                          void onPin(
-                            d.sessionId,
-                            d.cwd,
-                            d.title || folderName(d.cwd),
-                          );
-                        }
-                      }}
-                      className={`mt-2 shrink-0 rounded px-1.5 text-[11px] ${
-                        pinned
-                          ? "text-[var(--accent)]"
-                          : "text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--accent)]"
-                      }`}
-                    >
-                      📌
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
+        <RecentsSection
+          show={showRecents}
+          diskSessions={diskSessions}
+          running={running}
+          grokAvailable={grokAvailable}
+          isPinned={isPinned}
+          onResumeDisk={onResumeDisk}
+          onRenameSession={onRenameSession}
+          onPin={onPin}
+          onUnpin={onUnpin}
+        />
       </div>
 
-      {/* Live status chip — full Activity lives in the right utility rail */}
       {active &&
         (active.busy ||
           countRunningTools(active.tools) > 0 ||
           countRunningBackground(active.backgroundTasks ?? []) > 0 ||
           countRunningSubagents(active.subagents ?? []) > 0) && (
-        <div className="border-t border-[var(--border)] px-3 py-2 text-[10px] text-[var(--warning)]">
-          {active.busy
-            ? "Turn running"
-            : countRunningSubagents(active.subagents ?? []) > 0
-              ? "Watching"
-              : "Tools active"}
-          {countRunningSubagents(active.subagents ?? []) > 0
-            ? ` · ${countRunningSubagents(active.subagents ?? [])} sub`
-            : ""}
-          {countRunningTools(active.tools) > 0
-            ? ` · ${countRunningTools(active.tools)} tool${countRunningTools(active.tools) === 1 ? "" : "s"}`
-            : ""}
-          {countRunningBackground(active.backgroundTasks ?? []) > 0
-            ? ` · ${countRunningBackground(active.backgroundTasks ?? [])} bg`
-            : ""}
-          <span className="text-[var(--text-faint)]"> · Alt+A</span>
-        </div>
-      )}
+          <div className="border-t border-[var(--border)] px-3 py-2 text-[10px] text-[var(--warning)]">
+            {active.busy
+              ? "Turn running"
+              : countRunningSubagents(active.subagents ?? []) > 0
+                ? "Watching"
+                : "Tools active"}
+            {countRunningSubagents(active.subagents ?? []) > 0
+              ? ` · ${countRunningSubagents(active.subagents ?? [])} sub`
+              : ""}
+            {countRunningTools(active.tools) > 0
+              ? ` · ${countRunningTools(active.tools)} tool${countRunningTools(active.tools) === 1 ? "" : "s"}`
+              : ""}
+            {countRunningBackground(active.backgroundTasks ?? []) > 0
+              ? ` · ${countRunningBackground(active.backgroundTasks ?? [])} bg`
+              : ""}
+            <span className="text-[var(--text-faint)]"> · Alt+A</span>
+          </div>
+        )}
 
       {stderrTail.length > 0 && (
         <details className="border-t border-[var(--border)] p-2 text-[10px] text-[var(--text-muted)]">
@@ -792,158 +358,5 @@ export function LeftNavigator({
         </details>
       )}
     </aside>
-  );
-}
-
-function SessionRow({
-  s,
-  selected,
-  pinned,
-  groups,
-  groupId,
-  onSelectSession,
-  onCloseSession,
-  onPin,
-  onUnpin,
-  onRenameSession,
-  onSetSessionGroup,
-}: {
-  s: DeskSession;
-  selected: boolean;
-  pinned: boolean;
-  groups: SessionGroup[];
-  groupId: string | null;
-  onSelectSession: (sessionId: string, cwd: string) => void;
-  onCloseSession: (sessionId: string) => void;
-  onPin: (sessionId: string, cwd: string, title?: string | null) => void;
-  onUnpin: (sessionId: string, cwd?: string) => void;
-  onRenameSession: (sessionId: string, title: string) => void;
-  onSetSessionGroup: (sessionId: string, groupId: string | null) => void;
-}) {
-  const statusLabel = s.busy
-    ? "busy"
-    : s.permissions.length
-      ? "needs permission"
-      : s.permissionMode === "always-approve"
-        ? "always-approve"
-        : "ready";
-
-  return (
-    <li>
-      {/*
-        Actions are position:absolute so opacity-0 controls don’t reserve
-        flex width (group select alone was ~4.5rem of “empty” space).
-      */}
-      <div
-        className={`group relative flex w-full items-start rounded-lg px-1 py-1 transition ${
-          selected
-            ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-            : "hover:bg-[var(--bg-hover)]"
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => onSelectSession(s.sessionId, s.cwd)}
-          aria-current={selected ? "true" : undefined}
-          aria-label={`${s.title}, ${statusLabel}`}
-          className="flex min-w-0 w-full items-start gap-2 rounded-md px-1.5 py-1 pr-7 text-left"
-        >
-          <span
-            className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-              s.busy
-                ? "status-pulse bg-[var(--warning)]"
-                : s.permissions.length
-                  ? "bg-[var(--danger)]"
-                  : s.permissionMode === "always-approve"
-                    ? "bg-[var(--warning)]"
-                    : "bg-[var(--success)]"
-            }`}
-            title={statusLabel}
-            aria-hidden
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1 text-[11px] font-medium">
-              {pinned && (
-                <span
-                  className="shrink-0 text-[10px] text-[var(--accent)]"
-                  title="Pinned"
-                  aria-hidden
-                >
-                  📌
-                </span>
-              )}
-              <SessionTitleLabel
-                title={s.title}
-                className="min-w-0 flex-1 text-[11px] font-medium"
-                onRename={(next) => onRenameSession(s.sessionId, next)}
-              />
-            </div>
-            <div className="mono truncate text-[10px] text-[var(--text-faint)]">
-              {folderName(s.cwd)}
-              {(() => {
-                const run = countRunningTools(s.tools);
-                const bg = countRunningBackground(s.backgroundTasks ?? []);
-                const sub = countRunningSubagents(s.subagents ?? []);
-                if (sub > 0) return ` · ${sub} sub`;
-                if (run > 0) return ` · ${run} run`;
-                if (bg > 0) return ` · ${bg} bg`;
-                if (s.plan.length > 0)
-                  return ` · plan ${s.plan.filter((e) => e.status === "completed").length}/${s.plan.length}`;
-                return "";
-              })()}
-            </div>
-          </div>
-        </button>
-        <div
-          className="pointer-events-none absolute top-0.5 right-0.5 z-10 flex items-start gap-0.5 rounded-md bg-[var(--bg-panel)]/95 py-0.5 pl-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-        >
-          {groups.length > 0 && (
-            <select
-              title="Move to group"
-              aria-label="Move session to group"
-              value={groupId ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                onSetSessionGroup(s.sessionId, v === "" ? null : v);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              className="max-w-[5.5rem] rounded border border-transparent bg-transparent py-0.5 text-[10px] text-[var(--text-faint)] hover:border-[var(--border)]"
-            >
-              <option value="">—</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          )}
-          <button
-            type="button"
-            title={pinned ? "Unpin" : "Pin (keep after restart)"}
-            aria-label={pinned ? "Unpin session" : "Pin session"}
-            onClick={() => {
-              if (pinned) void onUnpin(s.sessionId, s.cwd);
-              else void onPin(s.sessionId, s.cwd, s.title);
-            }}
-            className={`rounded px-1.5 py-0.5 text-[11px] ${
-              pinned
-                ? "text-[var(--accent)]"
-                : "text-[var(--text-faint)] hover:text-[var(--accent)]"
-            }`}
-          >
-            📌
-          </button>
-          <button
-            type="button"
-            title="Close tab"
-            aria-label="Close session"
-            onClick={() => onCloseSession(s.sessionId)}
-            className="rounded px-1.5 py-0.5 text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--danger)]"
-          >
-            ×
-          </button>
-        </div>
-      </div>
-    </li>
   );
 }

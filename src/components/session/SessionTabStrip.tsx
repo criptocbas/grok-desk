@@ -1,5 +1,5 @@
 import type { DeskSession } from "../../types";
-import { folderName } from "../../lib/format";
+import { resolveSessionTitle } from "../../lib/sessionTitle";
 import { sessionStatus } from "../../lib/sessionStatus";
 
 type Props = {
@@ -35,7 +35,7 @@ export function SessionTabStrip({
         {sessions.map((s) => {
           const active = s.sessionId === activeId;
           const st = sessionStatus(s);
-          const title = s.title || folderName(s.cwd);
+          const title = resolveSessionTitle(s.cwd, s.title);
           return (
             <div
               key={s.sessionId}

@@ -81,6 +81,11 @@ import {
 import { extractText, folderName, shortId, uid } from "./lib/format";
 import { chatContentMaxClass } from "./lib/layout";
 import {
+  isGenericTitle,
+  resolveSessionTitle,
+  shouldAdoptTitle,
+} from "./lib/sessionTitle";
+import {
   parseAvailableCommands,
   parsePlanEntries,
   planFromTodoInput,
@@ -593,8 +598,14 @@ export default function App() {
           title,
         });
         const sess = sessionsRef.current.find((s) => s.sessionId === sessionId);
-        const fallback = sess ? folderName(sess.cwd) : "Untitled";
-        const display = (saved && saved.trim()) || fallback;
+        const cwd = sess?.cwd ?? "";
+        const display = resolveSessionTitle(
+          cwd,
+          saved,
+          sess?.title,
+          folderName(cwd),
+        );
+        // Always write the chosen display name into the open tab (and chrome/tabs).
         patchSession(sessionId, (s) => ({ ...s, title: display }));
         // Keep group-pin resume metadata in sync
         if (sess) {
@@ -617,6 +628,28 @@ export default function App() {
     },
     [patchSession, refreshPins, refreshDisk, refreshGroups],
   );
+
+  /**
+   * Pull better titles from pins into open tabs (folder-name → descriptive).
+   * Pins can hold Grok summary / pin snapshot names that tabs never got.
+   */
+  useEffect(() => {
+    if (pins.length === 0 || sessions.length === 0) return;
+    setSessions((prev) => {
+      let changed = false;
+      const next = prev.map((s) => {
+        const pin = pins.find((p) => p.sessionId === s.sessionId);
+        if (!pin?.title) return s;
+        if (!shouldAdoptTitle(s.cwd, s.title, pin.title)) return s;
+        changed = true;
+        return {
+          ...s,
+          title: resolveSessionTitle(s.cwd, pin.title, s.title),
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [pins, sessions.length]);
 
   const reorderPins = useCallback(async (sessionIds: string[]) => {
     try {
@@ -1611,7 +1644,7 @@ export default function App() {
       const desk: DeskSession = {
         sessionId: s.sessionId,
         cwd: s.cwd,
-        title: customTitle || s.title || folderName(s.cwd),
+        title: resolveSessionTitle(s.cwd, customTitle, s.title),
         modelId: s.modelId,
         reasoningEffort: s.reasoningEffort ?? null,
         availableModels: s.availableModels ?? info?.availableModels ?? [],
@@ -1695,7 +1728,7 @@ export default function App() {
         const desk: DeskSession = {
           sessionId: d.sessionId,
           cwd: d.cwd,
-          title: d.title || folderName(d.cwd),
+          title: resolveSessionTitle(d.cwd, d.title),
           modelId: d.modelId ?? null,
           reasoningEffort: null,
           availableModels: info?.availableModels ?? [],
@@ -1728,6 +1761,26 @@ export default function App() {
         selectSession(d.sessionId, d.cwd);
       }
       if (alreadyOpen) {
+        // Session already a tab — still reconcile title (pin/custom may be better).
+        let customTitle: string | null = null;
+        try {
+          customTitle =
+            (await invoke<string | null>("get_session_title", {
+              sessionId: d.sessionId,
+            })) ?? null;
+        } catch {
+          /* optional */
+        }
+        patchSession(d.sessionId, (s) => {
+          const next = resolveSessionTitle(
+            s.cwd,
+            customTitle,
+            d.title,
+            s.title,
+          );
+          if (next === s.title) return s;
+          return { ...s, title: next };
+        });
         return true;
       }
 
@@ -1774,7 +1827,7 @@ export default function App() {
           loaded.availableModels?.length
             ? loaded.availableModels
             : s.availableModels,
-        title: customTitle || d.title || s.title,
+        title: resolveSessionTitle(s.cwd, customTitle, d.title, s.title),
         items: [
           ...s.items
             .filter((i) => i.role !== "system" || !i.text.startsWith("Loading"))
@@ -2109,7 +2162,7 @@ export default function App() {
       ],
       title:
         titleHint &&
-        s.title === folderName(s.cwd) &&
+        isGenericTitle(s.title, s.cwd) &&
         titleHint.length > 0 &&
         titleHint.length < 60
           ? titleHint

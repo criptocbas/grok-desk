@@ -146,6 +146,8 @@ Project file tree is a resizable strip left of chat (`Alt+F`); opens files via t
 | `src/components/files/FileTreePane.tsx` | Project explorer (open externally) |
 | `src-tauri/src/fs_browse.rs` | Safe list_dir under project root |
 | `src/lib/sessionStatus.ts` | Shared session status dots/labels |
+| `src/lib/sessionTitle.ts` | Single display-title policy (tabs / pins / chrome) |
+| `src/components/layout/navigator/*` | LeftNavigator sections (pins, open, recents, row) |
 | `src/components/layout/CoachMarks.tsx` | Skippable first-run tips |
 | `src/components/RichText.tsx` | Assistant markdown |
 
