@@ -91,6 +91,7 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `default_cwd` | Sensible starting folder |
 | `show_notification` | OS notification (`notify-send` on Linux) |
 | `pty_spawn` / `pty_write` / `pty_resize` / `pty_kill` / `pty_kill_session` / `pty_kill_all` / `pty_list` | **Human** project shell (Desk-owned PTY). Not ACP client terminal — `clientCapabilities.terminal` stays false. |
+| `list_project_dir` | Read-only directory listing under session cwd for the file tree (skips `node_modules`, `.git`, …) |
 | `list_pins` / `pin_session` / `unpin_session` / `reorder_pins` | Desk pin bookmarks (`~/.config/grok-desk/pins.json`) |
 | `set_session_title` / `get_session_title` | Custom session names (`~/.config/grok-desk/session-titles.json`) |
 | `list_session_groups` / create / rename / delete / set membership | Session folders (`~/.config/grok-desk/session-groups.json`) |
@@ -108,12 +109,13 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 
 ```
 Titlebar
-LeftNavigator | Workbench (chrome · transcript · composer · Terminal dock) | Utility rail
+LeftNavigator | Workbench (tabs · Files tree · chrome · transcript · composer · Terminal) | Utility rail
   pins · open · project                         Plan | Diff | Activity | Settings
                                                 (resizable, width in localStorage)
 ```
 
 Human project shell is a bottom dock (`Ctrl+\``), not an inspector tab. ACP `terminal` capability stays false.
+Project file tree is a resizable strip left of chat (`Alt+F`); opens files via the OS opener — not an in-app editor.
 
 - **Design tokens:** `src/index.css` + `src/DESIGN.md` (surface ladder, accent, density).
 - **App.tsx** wires ACP session state and composes layout components — keep it orchestration-only.
@@ -140,6 +142,11 @@ Human project shell is a bottom dock (`Ctrl+\``), not an inspector tab. ACP `ter
 | `src/components/terminal/TerminalDock.tsx` | Bottom project shell dock (resize + strip) |
 | `src/components/terminal/TerminalPane.tsx` | xterm host for Desk-owned PTY |
 | `src-tauri/src/pty.rs` | portable-pty manager (human shell only) |
+| `src/components/session/SessionTabStrip.tsx` | Horizontal open-session tabs |
+| `src/components/files/FileTreePane.tsx` | Project explorer (open externally) |
+| `src-tauri/src/fs_browse.rs` | Safe list_dir under project root |
+| `src/lib/sessionStatus.ts` | Shared session status dots/labels |
+| `src/components/layout/CoachMarks.tsx` | Skippable first-run tips |
 | `src/components/RichText.tsx` | Assistant markdown |
 
 ## Reference

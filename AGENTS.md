@@ -51,9 +51,11 @@ Requires: Rust, Node 20+, system WebKitGTK (Linux), `grok` on PATH.
 src/App.tsx                      # Orchestration: sessions, ACP listeners, compose shell
 src/DESIGN.md                    # Design system (tokens, density, a11y)
 src/lib/                         # Pure helpers (caps, format, plan parse)
-src/components/layout/           # Titlebar, LeftNavigator, EmptyWorkbench
+src/components/layout/           # Titlebar, LeftNavigator, EmptyWorkbench, CoachMarks
 src/components/chat/             # Composer, bubbles, stall/permission banners
-src/components/session/          # Session chrome (model/effort/perms)
+src/components/session/          # Session chrome, tab strip (model/effort/perms)
+src/components/files/            # Project file tree (open externally)
+src/lib/sessionStatus.ts         # Shared session status for tabs / navigator
 src/components/PlanPane.tsx
 src/components/DiffPane.tsx
 src/components/ActivityPane.tsx

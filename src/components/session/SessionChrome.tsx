@@ -28,6 +28,9 @@ type Props = {
   ) => void;
   onPermissionMode: (sessionId: string, mode: PermissionMode) => void;
   onInspectorTab: (tab: InspectorTab | null | ((t: InspectorTab | null) => InspectorTab | null)) => void;
+  /** Optional file-tree toggle (Alt+F). */
+  fileTreeOpen?: boolean;
+  onToggleFileTree?: () => void;
 };
 
 export function SessionChrome({
@@ -47,6 +50,8 @@ export function SessionChrome({
   onApplyModel,
   onPermissionMode,
   onInspectorTab,
+  fileTreeOpen = false,
+  onToggleFileTree,
 }: Props) {
   const reviewCount = session.reviewComments?.length ?? 0;
 
@@ -197,6 +202,20 @@ export function SessionChrome({
         </label>
 
         <div className="ml-auto flex items-center gap-1">
+          {onToggleFileTree && (
+            <button
+              type="button"
+              onClick={onToggleFileTree}
+              className={`rounded-md px-2 py-1 text-[11px] font-medium ${
+                fileTreeOpen
+                  ? "bg-[var(--accent)]/15 text-[var(--accent)]"
+                  : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+              }`}
+              title="File tree (Alt+F)"
+            >
+              Files
+            </button>
+          )}
           <button
             type="button"
             onClick={() =>

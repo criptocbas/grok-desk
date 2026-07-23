@@ -1,5 +1,6 @@
 mod acp;
 mod clipboard;
+mod fs_browse;
 mod git;
 mod install;
 mod pins;
@@ -410,6 +411,20 @@ fn clipboard_read_image() -> Result<Option<clipboard::ClipboardImage>, String> {
     clipboard::read_image()
 }
 
+/// List one directory under a project root for the file tree pane.
+#[tauri::command]
+fn list_project_dir(
+    root: String,
+    path: Option<String>,
+    show_hidden: Option<bool>,
+) -> fs_browse::ListDirResult {
+    fs_browse::list_dir(
+        &root,
+        path.as_deref(),
+        show_hidden.unwrap_or(false),
+    )
+}
+
 // ── Human project shell (Desk-owned PTY; not ACP client terminal) ──────────
 
 #[tauri::command]
@@ -543,6 +558,7 @@ pub fn run() {
             start_self_update,
             read_update_log,
             clipboard_read_image,
+            list_project_dir,
             restart_app,
             pty_spawn,
             pty_write,

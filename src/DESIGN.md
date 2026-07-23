@@ -93,7 +93,7 @@ Optional presets (Settings later): Forge (default) · Indigo · Teal — swap `-
 ```
 Titlebar
 Left Navigator | Center Workbench | Right Utility (Plan · Diff · Activity · Settings)
-                 (chrome · chat · composer)
+                 (session tabs · optional Files tree · chrome · chat · composer)
                  [ project Terminal — bottom split, Ctrl+` ]
 ```
 
@@ -101,7 +101,10 @@ Left Navigator | Center Workbench | Right Utility (Plan · Diff · Activity · S
 - Right collapse: icon strip; badges for plan/diff/activity.
 - Utility width: resizable, persisted.
 - Chat-first: right rail closed by default until plan/diff needs attention.
+- **Session tabs:** horizontal strip when any session is open; status dots match sidebar honesty.
+- **File tree:** optional left strip in workbench (`Alt+F`); open files via OS default app — not an in-app editor.
 - **Project terminal:** bottom dock under composer (not a rail tab). Human PTY only — never ACP client terminal. Closed by default; `Ctrl+\`` toggles; height persisted.
+- **Coach marks:** skippable corner tips on first run — never a modal trap.
 
 ## Components (usage)
 

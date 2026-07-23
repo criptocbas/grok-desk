@@ -94,12 +94,41 @@ export function CommandPalette({ open, commands, onClose }: Props) {
         setIndex((i) => Math.max(i - 1, 0));
         return;
       }
+      if (e.key === "Home") {
+        e.preventDefault();
+        setIndex(0);
+        return;
+      }
+      if (e.key === "End") {
+        e.preventDefault();
+        setIndex(Math.max(filtered.length - 1, 0));
+        return;
+      }
       if (e.key === "Enter") {
         e.preventDefault();
         const cmd = filtered[index];
         if (cmd) {
           onClose();
           requestAnimationFrame(() => cmd.run());
+        }
+        return;
+      }
+      // Keep Tab focus inside the dialog
+      if (e.key === "Tab") {
+        const root = inputRef.current?.closest("[role='dialog']");
+        if (!root) return;
+        const focusable = root.querySelectorAll<HTMLElement>(
+          'input, button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
         }
       }
     };

@@ -99,11 +99,19 @@ import { UpdateBanner } from "./components/layout/UpdateBanner";
 import { LeftNavigator } from "./components/layout/LeftNavigator";
 import { EmptyWorkbench } from "./components/layout/EmptyWorkbench";
 import { SessionChrome } from "./components/session/SessionChrome";
+import { SessionTabStrip } from "./components/session/SessionTabStrip";
 import { ShortcutsHelp } from "./components/command/ShortcutsHelp";
 import {
   CommandPalette,
   type PaletteCommand,
 } from "./components/command/CommandPalette";
+import {
+  FileTreePane,
+  loadFileTreeOpen,
+  saveFileTreeOpen,
+} from "./components/files/FileTreePane";
+import { CoachMarks } from "./components/layout/CoachMarks";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 export default function App() {
   const [grok, setGrok] = useState<GrokStatus | null>(null);
@@ -129,6 +137,8 @@ export default function App() {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
   /** Bottom project shell — chat-first; open state persisted. */
   const [terminalOpen, setTerminalOpen] = useState(loadTerminalOpen);
+  /** Project file tree — left of chat; open state persisted. */
+  const [fileTreeOpen, setFileTreeOpen] = useState(loadFileTreeOpen);
   /** When true, global shortcuts must not steal keys from the shell. */
   const [terminalFocused, setTerminalFocused] = useState(false);
   /** Bump to remount TerminalPane after palette “Restart shell”. */
@@ -751,6 +761,14 @@ export default function App() {
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((v) => !v);
+  }, []);
+
+  const toggleFileTree = useCallback(() => {
+    setFileTreeOpen((v) => {
+      const next = !v;
+      saveFileTreeOpen(next);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -1411,7 +1429,7 @@ export default function App() {
         return;
       }
 
-      // Esc layers: palette → help → terminal → inspector
+      // Esc layers: palette → help → terminal → file tree → inspector
       if (e.key === "Escape") {
         if (showPalette) {
           setShowPalette(false);
@@ -1424,6 +1442,11 @@ export default function App() {
         if (terminalOpen) {
           setTerminalOpen(false);
           setTerminalFocused(false);
+          return;
+        }
+        if (fileTreeOpen) {
+          setFileTreeOpen(false);
+          saveFileTreeOpen(false);
           return;
         }
         if (inspectorTab) {
@@ -1455,6 +1478,11 @@ export default function App() {
         if (k === "a") {
           e.preventDefault();
           setInspectorTab((t) => (t === "activity" ? null : "activity"));
+          return;
+        }
+        if (k === "f") {
+          e.preventDefault();
+          if (activeIdRef.current) toggleFileTree();
           return;
         }
         if (k === "," || e.code === "Comma") {
@@ -1504,9 +1532,11 @@ export default function App() {
     inspectorTab,
     terminalOpen,
     terminalFocused,
+    fileTreeOpen,
     cycleSession,
     focusComposer,
     cwd,
+    toggleFileTree,
   ]);
 
   // Auto-open Plan when agent drops a plan checklist (once per arrival)
@@ -2935,6 +2965,15 @@ export default function App() {
         },
       },
       {
+        id: "toggle-file-tree",
+        label: fileTreeOpen ? "Hide file tree" : "Show file tree",
+        detail: "Browse project · open files externally",
+        group: "Panels",
+        shortcut: "Alt+F",
+        enabled: !!active,
+        run: () => toggleFileTree(),
+      },
+      {
         id: "restart-shell",
         label: "Restart project shell",
         detail: active?.cwd || undefined,
@@ -3017,6 +3056,19 @@ export default function App() {
       });
     }
 
+    for (const d of diskSessions.slice(0, 10)) {
+      const open = sessions.some((s) => s.sessionId === d.sessionId);
+      if (open) continue;
+      cmds.push({
+        id: `recent:${d.sessionId}`,
+        label: d.title || folderName(d.cwd),
+        detail: `Recent · ${folderName(d.cwd)} · ${shortId(d.sessionId)}`,
+        group: "Recents",
+        enabled: running,
+        run: () => void resumeDisk(d),
+      });
+    }
+
     if (active) {
       const pinned = isPinned(active.sessionId, active.cwd);
       cmds.push({
@@ -3028,6 +3080,69 @@ export default function App() {
           else void pinSession(active.sessionId, active.cwd, active.title);
         },
       });
+      cmds.push({
+        id: "enter-plan-mode",
+        label: "Enter plan mode",
+        detail: "Agent plans before implementing",
+        group: "Agent",
+        enabled: !active.busy,
+        run: () => {
+          setInspectorTab("plan");
+          enterPlanMode();
+        },
+      });
+      cmds.push({
+        id: "perm-ask",
+        label: "Permission mode: Ask",
+        detail: "Prompt for tool approvals",
+        group: "Sessions",
+        enabled: (active.permissionMode ?? "default") !== "default",
+        run: () => setPermissionMode(active.sessionId, "default"),
+      });
+      cmds.push({
+        id: "perm-always",
+        label: "Permission mode: Always approve",
+        detail: "Auto-allow tools for this tab",
+        group: "Sessions",
+        enabled: active.permissionMode !== "always-approve",
+        run: () => setPermissionMode(active.sessionId, "always-approve"),
+      });
+      cmds.push({
+        id: "open-project-folder",
+        label: "Open project folder…",
+        detail: active.cwd,
+        group: "Project",
+        run: () => {
+          void openPath(active.cwd).catch((e) =>
+            setError(`Open folder failed: ${e}`),
+          );
+        },
+      });
+      cmds.push({
+        id: "copy-session-id",
+        label: "Copy session ID",
+        detail: active.sessionId,
+        group: "Sessions",
+        run: () => {
+          void navigator.clipboard.writeText(active.sessionId).catch(() => {
+            setError("Clipboard write failed");
+          });
+        },
+      });
+      if (active.planApproval) {
+        cmds.push({
+          id: "approve-plan",
+          label: "Approve plan & run",
+          group: "Agent",
+          run: () => approvePlan(),
+        });
+        cmds.push({
+          id: "revise-plan",
+          label: "Request plan changes",
+          group: "Agent",
+          run: () => revisePlan(),
+        });
+      }
     }
 
     return cmds;
@@ -3038,12 +3153,15 @@ export default function App() {
     active,
     sessions,
     pins,
+    diskSessions,
     sidebarCollapsed,
     showRecents,
     selectSession,
     focusComposer,
     isPinned,
     terminalOpen,
+    fileTreeOpen,
+    toggleFileTree,
   ]);
 
   return (
@@ -3156,183 +3274,211 @@ export default function App() {
 
         <div className="flex min-w-0 flex-1">
           <main className="flex min-w-0 flex-1 flex-col">
+            {sessions.length > 0 && (
+              <SessionTabStrip
+                sessions={sessions}
+                activeId={activeId}
+                onSelect={selectSession}
+                onClose={closeSession}
+                onNewSession={() => void openSession()}
+                canNewSession={!!cwd}
+              />
+            )}
             {active ? (
-              <>
-                <SessionChrome
-                  session={active}
-                  isPinned={isPinned(active.sessionId, active.cwd)}
-                  sessionModels={sessionModels}
-                  supportsEffort={supportsEffort}
-                  effortOptions={effortOptions}
-                  infoModelId={info?.modelId}
-                  infoEffort={info?.reasoningEffort}
-                  planBadge={planBadge}
-                  diffBadge={diffBadge}
-                  inspectorTab={inspectorTab}
-                  gitFileCount={gitFiles.length}
-                  onPinToggle={() => {
-                    if (isPinned(active.sessionId, active.cwd)) {
-                      void unpinSession(active.sessionId, active.cwd);
-                    } else {
-                      void pinSession(
-                        active.sessionId,
-                        active.cwd,
-                        active.title,
-                      );
-                    }
+              <div className="flex min-h-0 min-w-0 flex-1">
+                <FileTreePane
+                  root={active.cwd}
+                  open={fileTreeOpen}
+                  onClose={() => {
+                    setFileTreeOpen(false);
+                    saveFileTreeOpen(false);
                   }}
-                  onRename={(title) =>
-                    void renameSession(active.sessionId, title)
-                  }
-                  onApplyModel={(sessionId, modelId, effort) =>
-                    void applyModelSettings(sessionId, modelId, effort)
-                  }
-                  onPermissionMode={setPermissionMode}
-                  onInspectorTab={setInspectorTab}
                 />
-
-                {isStalled && (
-                  <StallBanner
-                    stallSeconds={stallSeconds}
-                    onStop={() => void cancel()}
-                    onUnlock={() => unlockUi(active.sessionId)}
-                    onRefreshDiffs={() =>
-                      void refreshGit(active.cwd, gitSelected)
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                  <SessionChrome
+                    session={active}
+                    isPinned={isPinned(active.sessionId, active.cwd)}
+                    sessionModels={sessionModels}
+                    supportsEffort={supportsEffort}
+                    effortOptions={effortOptions}
+                    infoModelId={info?.modelId}
+                    infoEffort={info?.reasoningEffort}
+                    planBadge={planBadge}
+                    diffBadge={diffBadge}
+                    inspectorTab={inspectorTab}
+                    gitFileCount={gitFiles.length}
+                    onPinToggle={() => {
+                      if (isPinned(active.sessionId, active.cwd)) {
+                        void unpinSession(active.sessionId, active.cwd);
+                      } else {
+                        void pinSession(
+                          active.sessionId,
+                          active.cwd,
+                          active.title,
+                        );
+                      }
+                    }}
+                    onRename={(title) =>
+                      void renameSession(active.sessionId, title)
                     }
+                    onApplyModel={(sessionId, modelId, effort) =>
+                      void applyModelSettings(sessionId, modelId, effort)
+                    }
+                    onPermissionMode={setPermissionMode}
+                    onInspectorTab={setInspectorTab}
+                    fileTreeOpen={fileTreeOpen}
+                    onToggleFileTree={toggleFileTree}
                   />
-                )}
 
-                <PermissionBanner
-                  permissions={active.permissions}
-                  sessionId={active.sessionId}
-                  onRespond={respondPermission}
-                />
-
-                <div className="relative min-h-0 flex-1">
-                  <div
-                    ref={scrollRef}
-                    onScroll={onTranscriptScroll}
-                    className={`h-full overflow-y-auto py-4 ${
-                      sidebarCollapsed && !inspectorTab ? "px-6" : "px-4"
-                    }`}
-                  >
-                    <TranscriptList
-                      items={active.items}
-                      contentMaxClass={chatMaxClass}
-                      onOpenActivity={() => setInspectorTab("activity")}
-                      onRetryUser={retryUserPrompt}
+                  {isStalled && (
+                    <StallBanner
+                      stallSeconds={stallSeconds}
+                      onStop={() => void cancel()}
+                      onUnlock={() => unlockUi(active.sessionId)}
+                      onRefreshDiffs={() =>
+                        void refreshGit(active.cwd, gitSelected)
+                      }
                     />
-                  </div>
-                  {showJumpToLatest && (
-                    <button
-                      type="button"
-                      onClick={() => scrollToLatest(active.sessionId)}
-                      className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1.5 text-[11px] font-medium text-[var(--text)] shadow-[var(--shadow-panel)] hover:border-[var(--accent)]"
-                    >
-                      Jump to latest
-                      {active.busy ? " · streaming" : ""}
-                    </button>
                   )}
-                </div>
 
-                {/* Polite live region for turn / permission state (screen readers). */}
-                <div className="sr-only" aria-live="polite" aria-atomic="true">
-                  {liveStatus}
-                </div>
-
-                {error && (
-                  <div className="border-t border-[var(--danger)]/40 bg-[var(--bg-danger-subtle)] px-4 py-2 text-xs text-[var(--danger)]">
-                    {error}
-                  </div>
-                )}
-
-                {watching && (
-                  <WatchingBanner
-                    subagentCount={subRunning}
-                    backgroundCount={bgRunning}
-                    onOpenActivity={() => setInspectorTab("activity")}
+                  <PermissionBanner
+                    permissions={active.permissions}
+                    sessionId={active.sessionId}
+                    onRespond={respondPermission}
                   />
-                )}
 
-                <Composer
-                  busy={active.busy}
-                  prompt={prompt}
-                  contentMaxClass={chatMaxClass}
-                  onPromptChange={(value, cursor) => {
-                    setPrompt(value);
-                    setComposerCursor(cursor);
-                  }}
-                  onCursor={setComposerCursor}
-                  composerRef={composerRef}
-                  pendingImages={pendingImages}
-                  onRemoveImage={(id) =>
-                    setPendingImages((prev) => prev.filter((p) => p.id !== id))
-                  }
-                  onPaste={onComposerPaste}
-                  onAttachImages={(files) => void addImageFiles(files)}
-                  promptQueue={active.promptQueue ?? []}
-                  onClearQueue={() =>
-                    patchSession(active.sessionId, (s) => ({
-                      ...s,
-                      promptQueue: [],
-                      items: [
-                        ...s.items,
-                        {
-                          id: uid(),
-                          role: "system",
-                          text: "Prompt queue cleared.",
-                          meta: "queue",
-                        },
-                      ],
-                    }))
-                  }
-                  onRemoveQueued={(id) =>
-                    removeQueuedPrompt(active.sessionId, id)
-                  }
-                  availableCommands={active.availableCommands ?? []}
-                  slashOpen={slashOpen}
-                  slashCommands={slashCommands}
-                  slashMatch={slashMatch}
-                  slashIndex={slashIndex}
-                  onSlashIndex={setSlashIndex}
-                  onPickSlash={applySlashCommand}
-                  onDismissSlash={() => {
-                    setSlashDismissed(true);
-                    setSlashIndex(0);
-                  }}
-                  slashDismissed={slashDismissed}
-                  onUndismissSlash={() => setSlashDismissed(false)}
-                  onSend={() => void send()}
-                  onCancel={() => void cancel()}
-                  context={{
-                    modeId: active.modeId,
-                    permissionMode: active.permissionMode ?? "default",
-                    modelLabel: (() => {
-                      const mid = active.modelId ?? info?.modelId;
-                      if (!mid) return null;
-                      const m = sessionModels.find((x) => x.modelId === mid);
-                      return m?.name || mid;
-                    })(),
-                    effortLabel: supportsEffort
-                      ? active.reasoningEffort ?? info?.reasoningEffort ?? null
-                      : null,
-                    reviewNoteCount: active.reviewComments?.length ?? 0,
-                    busy: active.busy,
-                    onOpenDiff: () => setInspectorTab("diff"),
-                    onOpenPlan: () => setInspectorTab("plan"),
-                    onSendReviewNotes: () => void sendReviewNotes(),
-                  }}
-                />
+                  <div className="relative min-h-0 flex-1">
+                    <div
+                      ref={scrollRef}
+                      onScroll={onTranscriptScroll}
+                      className={`h-full overflow-y-auto py-4 ${
+                        sidebarCollapsed && !inspectorTab && !fileTreeOpen
+                          ? "px-6"
+                          : "px-4"
+                      }`}
+                    >
+                      <TranscriptList
+                        items={active.items}
+                        contentMaxClass={chatMaxClass}
+                        onOpenActivity={() => setInspectorTab("activity")}
+                        onRetryUser={retryUserPrompt}
+                      />
+                    </div>
+                    {showJumpToLatest && (
+                      <button
+                        type="button"
+                        onClick={() => scrollToLatest(active.sessionId)}
+                        className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1.5 text-[11px] font-medium text-[var(--text)] shadow-[var(--shadow-panel)] hover:border-[var(--accent)]"
+                      >
+                        Jump to latest
+                        {active.busy ? " · streaming" : ""}
+                      </button>
+                    )}
+                  </div>
 
-                <TerminalDock
-                  key={`${active.sessionId}:${shellEpoch}`}
-                  sessionId={active.sessionId}
-                  cwd={active.cwd}
-                  open={terminalOpen}
-                  onOpenChange={setTerminalOpen}
-                  onTerminalFocusChange={setTerminalFocused}
-                />
-              </>
+                  {/* Polite live region for turn / permission state (screen readers). */}
+                  <div className="sr-only" aria-live="polite" aria-atomic="true">
+                    {liveStatus}
+                  </div>
+
+                  {error && (
+                    <div className="border-t border-[var(--danger)]/40 bg-[var(--bg-danger-subtle)] px-4 py-2 text-xs text-[var(--danger)]">
+                      {error}
+                    </div>
+                  )}
+
+                  {watching && (
+                    <WatchingBanner
+                      subagentCount={subRunning}
+                      backgroundCount={bgRunning}
+                      onOpenActivity={() => setInspectorTab("activity")}
+                    />
+                  )}
+
+                  <Composer
+                    busy={active.busy}
+                    prompt={prompt}
+                    contentMaxClass={chatMaxClass}
+                    onPromptChange={(value, cursor) => {
+                      setPrompt(value);
+                      setComposerCursor(cursor);
+                    }}
+                    onCursor={setComposerCursor}
+                    composerRef={composerRef}
+                    pendingImages={pendingImages}
+                    onRemoveImage={(id) =>
+                      setPendingImages((prev) =>
+                        prev.filter((p) => p.id !== id),
+                      )
+                    }
+                    onPaste={onComposerPaste}
+                    onAttachImages={(files) => void addImageFiles(files)}
+                    promptQueue={active.promptQueue ?? []}
+                    onClearQueue={() =>
+                      patchSession(active.sessionId, (s) => ({
+                        ...s,
+                        promptQueue: [],
+                        items: [
+                          ...s.items,
+                          {
+                            id: uid(),
+                            role: "system",
+                            text: "Prompt queue cleared.",
+                            meta: "queue",
+                          },
+                        ],
+                      }))
+                    }
+                    onRemoveQueued={(id) =>
+                      removeQueuedPrompt(active.sessionId, id)
+                    }
+                    availableCommands={active.availableCommands ?? []}
+                    slashOpen={slashOpen}
+                    slashCommands={slashCommands}
+                    slashMatch={slashMatch}
+                    slashIndex={slashIndex}
+                    onSlashIndex={setSlashIndex}
+                    onPickSlash={applySlashCommand}
+                    onDismissSlash={() => {
+                      setSlashDismissed(true);
+                      setSlashIndex(0);
+                    }}
+                    slashDismissed={slashDismissed}
+                    onUndismissSlash={() => setSlashDismissed(false)}
+                    onSend={() => void send()}
+                    onCancel={() => void cancel()}
+                    context={{
+                      modeId: active.modeId,
+                      permissionMode: active.permissionMode ?? "default",
+                      modelLabel: (() => {
+                        const mid = active.modelId ?? info?.modelId;
+                        if (!mid) return null;
+                        const m = sessionModels.find((x) => x.modelId === mid);
+                        return m?.name || mid;
+                      })(),
+                      effortLabel: supportsEffort
+                        ? active.reasoningEffort ??
+                          info?.reasoningEffort ??
+                          null
+                        : null,
+                      reviewNoteCount: active.reviewComments?.length ?? 0,
+                      busy: active.busy,
+                      onOpenDiff: () => setInspectorTab("diff"),
+                      onOpenPlan: () => setInspectorTab("plan"),
+                      onSendReviewNotes: () => void sendReviewNotes(),
+                    }}
+                  />
+
+                  <TerminalDock
+                    key={`${active.sessionId}:${shellEpoch}`}
+                    sessionId={active.sessionId}
+                    cwd={active.cwd}
+                    open={terminalOpen}
+                    onOpenChange={setTerminalOpen}
+                    onTerminalFocusChange={setTerminalFocused}
+                  />
+                </div>
+              </div>
             ) : (
               <EmptyWorkbench
                 running={running}
@@ -3447,6 +3593,8 @@ export default function App() {
         open={showShortcuts}
         onClose={() => setShowShortcuts(false)}
       />
+
+      <CoachMarks ready={running && sessions.length > 0} />
     </div>
   );
 }

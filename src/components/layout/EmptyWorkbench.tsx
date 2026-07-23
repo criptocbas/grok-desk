@@ -43,10 +43,11 @@ export function EmptyWorkbench({
         </p>
         <p className="mx-auto max-w-md text-[13px] leading-relaxed text-[var(--text-muted)]">
           Chat-first layout. Plan and Diff stay in the right rail until you need
-          them — open with the toolbar or <span className="kbd">Alt</span>+
-          <span className="kbd">P</span> / <span className="kbd">D</span>. Press{" "}
-          <span className="kbd">Ctrl</span>+<span className="kbd">K</span> for
-          the command palette.
+          them — <span className="kbd">Alt</span>+
+          <span className="kbd">P</span> / <span className="kbd">D</span>. File
+          tree: <span className="kbd">Alt</span>+
+          <span className="kbd">F</span>. Command palette:{" "}
+          <span className="kbd">Ctrl</span>+<span className="kbd">K</span>.
         </p>
       </div>
 

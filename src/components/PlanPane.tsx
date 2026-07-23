@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { PlanApprovalRequest, PlanEntry } from "../types";
 import { RichText } from "./RichText";
 
@@ -57,16 +57,27 @@ export function PlanPane({
   onAbandonPlan,
 }: Props) {
   const [docOpen, setDocOpen] = useState(false);
+  const [hideCompleted, setHideCompleted] = useState(false);
   const done = plan.filter((e) => e.status === "completed").length;
   const total = plan.length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const inPlanMode = modeId === "plan";
   const awaitingApproval = !!planApproval;
   const fullDoc = planApproval?.planContent || planDoc || null;
 
+  const visiblePlan = useMemo(() => {
+    if (!hideCompleted) return plan;
+    return plan.filter((e) => e.status !== "completed");
+  }, [plan, hideCompleted]);
+
   const body = (
     <>
       {awaitingApproval && (
-        <div className="space-y-2 border-b border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-3">
+        <div
+          className="sticky top-0 z-10 space-y-2 border-b border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_10%,var(--bg-panel))] p-3"
+          role="alert"
+          aria-live="assertive"
+        >
           <div className="text-[11px] font-semibold tracking-wide text-[var(--warning)]">
             Plan ready — approve to implement
           </div>
@@ -130,6 +141,38 @@ export function PlanPane({
         </button>
       </div>
 
+      {total > 0 && (
+        <div className="border-b border-[var(--border)] px-2.5 py-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="mono text-[10px] text-[var(--text-faint)]">
+              {done}/{total} complete · {pct}%
+            </span>
+            {done > 0 && (
+              <button
+                type="button"
+                onClick={() => setHideCompleted((v) => !v)}
+                className="text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)]"
+              >
+                {hideCompleted ? "Show completed" : "Hide completed"}
+              </button>
+            )}
+          </div>
+          <div
+            className="h-1 overflow-hidden rounded-full bg-[var(--bg)]"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Plan progress"
+          >
+            <div
+              className="h-full rounded-full bg-[var(--success)] transition-[width] duration-200"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
         {inPlanMode && !awaitingApproval && (
           <div className="mb-2 rounded-md bg-[var(--thought)]/10 px-2 py-1 text-[10px] font-medium text-[var(--thought)]">
@@ -150,24 +193,47 @@ export function PlanPane({
               <span className="kbd">P</span>
             </p>
           </div>
+        ) : visiblePlan.length === 0 && hideCompleted ? (
+          <p className="text-[12px] text-[var(--text-muted)]">
+            All steps complete.{" "}
+            <button
+              type="button"
+              onClick={() => setHideCompleted(false)}
+              className="text-[var(--accent)] hover:underline"
+            >
+              Show completed
+            </button>
+          </p>
         ) : (
           <ul className="space-y-1.5">
-            {plan.map((entry, i) => (
+            {visiblePlan.map((entry, i) => (
               <li
                 key={`${i}-${entry.content.slice(0, 24)}`}
-                className="rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2"
+                className={`rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 ${
+                  entry.status === "completed" ? "opacity-70" : ""
+                } ${
+                  entry.status === "in_progress"
+                    ? "border-[var(--warning)]/35"
+                    : ""
+                }`}
               >
                 <div className="flex items-start gap-2">
                   <span
                     className={`mono mt-0.5 text-xs ${statusClass(entry.status)}`}
+                    aria-hidden
                   >
                     {statusIcon(entry.status)}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[12.5px] leading-snug text-[var(--text)]">
+                    <div
+                      className={`text-[12.5px] leading-snug text-[var(--text)] ${
+                        entry.status === "completed" ? "line-through decoration-[var(--text-faint)]" : ""
+                      }`}
+                    >
                       {entry.content}
                     </div>
                     <div className="mono mt-1 text-[10px] text-[var(--text-faint)]">
+                      <span className="sr-only">Status: </span>
                       {entry.status}
                       {entry.priority ? ` · ${entry.priority}` : ""}
                     </div>
@@ -176,12 +242,6 @@ export function PlanPane({
               </li>
             ))}
           </ul>
-        )}
-
-        {total > 0 && (
-          <div className="mono mt-2 text-[10px] text-[var(--text-faint)]">
-            {done}/{total} complete
-          </div>
         )}
 
         {fullDoc && (

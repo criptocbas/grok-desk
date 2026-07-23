@@ -1,7 +1,7 @@
 # Grok Desk — Roadmap
 
 **Current version:** 0.9.x  
-**Current phase focus:** Phase 3 — Workspace (control + activity shipped; chrome next)  
+**Current phase focus:** Phase 3 nearly complete (workspace chrome shipped); next Phase 4 ship loop / Tier 2b / worktrees  
 **Explicitly deferred:** GrokLink / phone remote commander (PC product first)
 
 ## Phase 0 — ACP spike ✅
@@ -56,12 +56,12 @@ Priority order is flexible; pick with the user:
 - [x] Three-surface shell: resizable utility rail (Plan · Diff · Activity · Settings)
 - [x] Pin drag-reorder (wires `reorder_pins`)
 - [x] Settings pane (theme / density / font / accent presets)
-- [ ] Workspace chrome: session tabs, empty states, Ctrl+K command palette, titlebar
+- [x] Workspace chrome: session tabs, empty states, Ctrl+K command palette, titlebar
 - [x] Surface polish: structured permissions, transcript collapse, composer context strip
-- [ ] Surface polish: plan/diff refinement (remaining)
-- [ ] A11y + progressive onboarding (ARIA live, skippable coach marks)
+- [x] Surface polish: plan/diff refinement (progress, hunk collapse, keyboard file list)
+- [x] A11y + progressive onboarding (ARIA live, palette focus trap, skippable coach marks)
 - [x] Embedded terminal (human PTY in project cwd; bottom dock, Ctrl+`)
-- [ ] File tree + open in external editor
+- [x] File tree + open in external editor (`list_project_dir` + opener; Alt+F)
 - [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
 - [x] Richer tool / subagent / background-task presentation (Activity pane + task_* events)
 - [x] First-class subagents: `subagent_spawned` / `subagent_finished`, Activity section, transcript cards, watching strip (Tier 1)

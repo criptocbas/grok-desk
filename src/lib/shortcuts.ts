@@ -11,6 +11,7 @@ export type ShortcutId =
   | "toggle-activity"
   | "toggle-settings"
   | "toggle-terminal"
+  | "toggle-file-tree"
   | "toggle-sidebar"
   | "new-session"
   | "focus-composer"
@@ -73,6 +74,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     group: "panels",
   },
   {
+    id: "toggle-file-tree",
+    keys: "Alt+F",
+    label: "Toggle file tree",
+    group: "panels",
+  },
+  {
     id: "toggle-sidebar",
     keys: "Ctrl+B / Alt+B",
     label: "Collapse / expand sidebar",
@@ -105,7 +112,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     id: "escape-layer",
     keys: "Esc",
-    label: "Close palette / help / terminal / panel",
+    label: "Close palette / help / terminal / file tree / panel",
     group: "general",
   },
 ];
@@ -118,6 +125,8 @@ export const SHORTCUT_HELP_EXTRA: [string, string][] = [
   ["Shift+Enter", "New line in composer"],
   ["Scroll up", "Pause auto-follow; Jump to latest to resume"],
   ["📌 Pin", "Keep session across restarts · drag to reorder"],
+  ["Click file", "Open in external editor (file tree)"],
+  ["j / k", "Next / previous file in Diff list (when focused)"],
 ];
 
 export function shortcutHelpRows(): [string, string][] {
