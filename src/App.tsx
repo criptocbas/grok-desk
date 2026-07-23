@@ -90,6 +90,10 @@ import { PermissionBanner } from "./components/chat/PermissionBanner";
 import { WatchingBanner } from "./components/chat/WatchingBanner";
 import { TranscriptList } from "./components/chat/TranscriptList";
 import { Composer } from "./components/chat/Composer";
+import {
+  TerminalDock,
+  loadTerminalOpen,
+} from "./components/terminal/TerminalDock";
 import { Titlebar } from "./components/layout/Titlebar";
 import { UpdateBanner } from "./components/layout/UpdateBanner";
 import { LeftNavigator } from "./components/layout/LeftNavigator";
@@ -123,6 +127,12 @@ export default function App() {
   });
   /** Right inspector: closed by default — chat-first. */
   const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
+  /** Bottom project shell — chat-first; open state persisted. */
+  const [terminalOpen, setTerminalOpen] = useState(loadTerminalOpen);
+  /** When true, global shortcuts must not steal keys from the shell. */
+  const [terminalFocused, setTerminalFocused] = useState(false);
+  /** Bump to remount TerminalPane after palette “Restart shell”. */
+  const [shellEpoch, setShellEpoch] = useState(0);
   /** Left rail collapsed for focus mode (persisted). */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
@@ -1360,12 +1370,16 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
+      const inTerm =
+        terminalFocused ||
+        Boolean(target?.closest?.("[data-grok-terminal]"));
       const typing =
-        target &&
-        (target.tagName === "TEXTAREA" ||
-          target.tagName === "INPUT" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable);
+        (target &&
+          (target.tagName === "TEXTAREA" ||
+            target.tagName === "INPUT" ||
+            target.tagName === "SELECT" ||
+            target.isContentEditable)) ||
+        inTerm;
 
       // Ctrl/Cmd+K — command palette (works while typing)
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
@@ -1383,7 +1397,21 @@ export default function App() {
         return;
       }
 
-      // Esc layers: palette → help → inspector
+      // Ctrl/Cmd+` — toggle project terminal (works while typing / in shell)
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        (e.key === "`" || e.code === "Backquote")
+      ) {
+        e.preventDefault();
+        setTerminalOpen((v) => {
+          if (v) setTerminalFocused(false);
+          return !v;
+        });
+        return;
+      }
+
+      // Esc layers: palette → help → terminal → inspector
       if (e.key === "Escape") {
         if (showPalette) {
           setShowPalette(false);
@@ -1391,6 +1419,11 @@ export default function App() {
         }
         if (showShortcuts) {
           setShowShortcuts(false);
+          return;
+        }
+        if (terminalOpen) {
+          setTerminalOpen(false);
+          setTerminalFocused(false);
           return;
         }
         if (inspectorTab) {
@@ -1452,10 +1485,11 @@ export default function App() {
         return;
       }
 
-      // Ctrl/Cmd+L — focus composer
+      // Ctrl/Cmd+L — focus composer (works from terminal too)
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "l") {
-        if (typing && target?.tagName === "TEXTAREA") return;
+        if (typing && target?.tagName === "TEXTAREA" && !inTerm) return;
         e.preventDefault();
+        setTerminalFocused(false);
         focusComposer();
         return;
       }
@@ -1464,7 +1498,16 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showShortcuts, showPalette, inspectorTab, cycleSession, focusComposer, cwd]);
+  }, [
+    showShortcuts,
+    showPalette,
+    inspectorTab,
+    terminalOpen,
+    terminalFocused,
+    cycleSession,
+    focusComposer,
+    cwd,
+  ]);
 
   // Auto-open Plan when agent drops a plan checklist (once per arrival)
   useEffect(() => {
@@ -1501,6 +1544,11 @@ export default function App() {
 
   const disconnect = async () => {
     try {
+      try {
+        await invoke("pty_kill_all");
+      } catch {
+        /* optional — shells may already be gone */
+      }
       await invoke("agent_stop");
       setRunning(false);
       setInfo(null);
@@ -1509,6 +1557,7 @@ export default function App() {
       draftsRef.current = {};
       loadDraft(null);
       pinsRestoredRef.current = false;
+      setTerminalFocused(false);
     } catch (e) {
       setError(String(e));
     }
@@ -1830,6 +1879,10 @@ export default function App() {
     delete streamBuf.current[sessionId];
     delete stickBottomRef.current[sessionId];
     inFlightRef.current.delete(sessionId);
+    void invoke("pty_kill_session", { sessionId }).catch(() => {
+      /* shell may not exist */
+    });
+    if (wasActive) setTerminalFocused(false);
     setSessions((prev) => {
       const next = prev.filter((s) => s.sessionId !== sessionId);
       if (wasActive) {
@@ -2870,6 +2923,35 @@ export default function App() {
           setInspectorTab((t) => (t === "settings" ? null : "settings")),
       },
       {
+        id: "toggle-terminal",
+        label: terminalOpen ? "Hide terminal" : "Show terminal",
+        detail: "Project shell in session cwd (human PTY)",
+        group: "Panels",
+        shortcut: "Ctrl+`",
+        enabled: !!active,
+        run: () => {
+          setTerminalOpen((v) => !v);
+          if (terminalOpen) setTerminalFocused(false);
+        },
+      },
+      {
+        id: "restart-shell",
+        label: "Restart project shell",
+        detail: active?.cwd || undefined,
+        group: "Panels",
+        enabled: !!active && terminalOpen,
+        run: async () => {
+          if (!active) return;
+          setTerminalOpen(true);
+          try {
+            await invoke("pty_kill_session", { sessionId: active.sessionId });
+          } catch {
+            /* ignore */
+          }
+          setShellEpoch((n) => n + 1);
+        },
+      },
+      {
         id: "toggle-sidebar",
         label: sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
         group: "Panels",
@@ -2961,6 +3043,7 @@ export default function App() {
     selectSession,
     focusComposer,
     isPinned,
+    terminalOpen,
   ]);
 
   return (
@@ -3239,6 +3322,15 @@ export default function App() {
                     onOpenPlan: () => setInspectorTab("plan"),
                     onSendReviewNotes: () => void sendReviewNotes(),
                   }}
+                />
+
+                <TerminalDock
+                  key={`${active.sessionId}:${shellEpoch}`}
+                  sessionId={active.sessionId}
+                  cwd={active.cwd}
+                  open={terminalOpen}
+                  onOpenChange={setTerminalOpen}
+                  onTerminalFocusChange={setTerminalFocused}
                 />
               </>
             ) : (

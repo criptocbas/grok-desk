@@ -3,6 +3,7 @@ mod clipboard;
 mod git;
 mod install;
 mod pins;
+mod pty;
 mod session_groups;
 mod session_titles;
 
@@ -409,6 +410,72 @@ fn clipboard_read_image() -> Result<Option<clipboard::ClipboardImage>, String> {
     clipboard::read_image()
 }
 
+// ── Human project shell (Desk-owned PTY; not ACP client terminal) ──────────
+
+#[tauri::command]
+fn pty_spawn(
+    app: AppHandle,
+    state: State<'_, pty::PtyState>,
+    session_id: String,
+    cwd: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<pty::PtySpawnResult, String> {
+    pty::spawn(
+        app,
+        &state,
+        session_id,
+        cwd,
+        cols.unwrap_or(80),
+        rows.unwrap_or(24),
+    )
+}
+
+#[tauri::command]
+fn pty_write(
+    state: State<'_, pty::PtyState>,
+    pty_id: String,
+    data: String,
+) -> Result<(), String> {
+    pty::write(&state, &pty_id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(
+    state: State<'_, pty::PtyState>,
+    pty_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    pty::resize(&state, &pty_id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_kill(state: State<'_, pty::PtyState>, pty_id: String) -> Result<(), String> {
+    pty::kill(&state, &pty_id)
+}
+
+#[tauri::command]
+fn pty_kill_session(
+    state: State<'_, pty::PtyState>,
+    session_id: String,
+) -> Result<(), String> {
+    pty::kill_session(&state, &session_id)
+}
+
+#[tauri::command]
+fn pty_kill_all(state: State<'_, pty::PtyState>) -> Result<(), String> {
+    pty::kill_all(&state)
+}
+
+#[tauri::command]
+fn pty_list(
+    state: State<'_, pty::PtyState>,
+    session_id: Option<String>,
+) -> Vec<pty::PtyInfo> {
+    pty::list(&state, session_id)
+}
+
 /// Relaunch the app process (picks up a newly installed binary).
 #[tauri::command]
 fn restart_app(app: AppHandle) {
@@ -434,6 +501,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
+        .manage(pty::PtyState::new())
         .invoke_handler(tauri::generate_handler![
             grok_status,
             agent_start,
@@ -476,6 +544,13 @@ pub fn run() {
             read_update_log,
             clipboard_read_image,
             restart_app,
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill,
+            pty_kill_session,
+            pty_kill_all,
+            pty_list,
         ])
         .setup(|app| {
             if let Ok(home) = std::env::var("HOME") {

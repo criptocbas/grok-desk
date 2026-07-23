@@ -10,6 +10,7 @@ export type ShortcutId =
   | "toggle-diff"
   | "toggle-activity"
   | "toggle-settings"
+  | "toggle-terminal"
   | "toggle-sidebar"
   | "new-session"
   | "focus-composer"
@@ -66,6 +67,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     group: "panels",
   },
   {
+    id: "toggle-terminal",
+    keys: "Ctrl+`",
+    label: "Toggle project terminal",
+    group: "panels",
+  },
+  {
     id: "toggle-sidebar",
     keys: "Ctrl+B / Alt+B",
     label: "Collapse / expand sidebar",
@@ -98,7 +105,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     id: "escape-layer",
     keys: "Esc",
-    label: "Close palette / help / panel",
+    label: "Close palette / help / terminal / panel",
     group: "general",
   },
 ];

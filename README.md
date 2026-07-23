@@ -26,6 +26,7 @@ Not a reimplementation of the agent — a Tauri app that speaks [ACP](https://ag
 - Image paste into prompts; rich markdown for assistant replies
 - Permission cards, **Stop unlocks UI**, stall recovery banner on long quiet periods
 - Long agent turns supported (prompt RPC wait is hours, not 5 minutes)
+- **Project terminal** — bottom dock shell in session cwd (`Ctrl+\``); human PTY only, not agent tools
 
 ## Requirements
 

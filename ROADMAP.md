@@ -60,7 +60,7 @@ Priority order is flexible; pick with the user:
 - [x] Surface polish: structured permissions, transcript collapse, composer context strip
 - [ ] Surface polish: plan/diff refinement (remaining)
 - [ ] A11y + progressive onboarding (ARIA live, skippable coach marks)
-- [ ] Embedded terminal (PTY in project cwd)
+- [x] Embedded terminal (human PTY in project cwd; bottom dock, Ctrl+`)
 - [ ] File tree + open in external editor
 - [x] Slash command / skill palette (ACP `available_commands_update` + composer `/`)
 - [x] Richer tool / subagent / background-task presentation (Activity pane + task_* events)

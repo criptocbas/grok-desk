@@ -256,6 +256,15 @@ select {
   animation: fade-up 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Embedded project terminal (xterm) — fill host, match Desk surfaces */
+[data-grok-terminal] .xterm {
+  height: 100%;
+  padding: 2px 0;
+}
+[data-grok-terminal] .xterm-viewport {
+  overflow-y: auto !important;
+}
+
 /* Screen-reader only (live regions, labels) */
 .sr-only {
   position: absolute;

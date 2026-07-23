@@ -93,12 +93,15 @@ Optional presets (Settings later): Forge (default) · Indigo · Teal — swap `-
 ```
 Titlebar
 Left Navigator | Center Workbench | Right Utility (Plan · Diff · Activity · Settings)
+                 (chrome · chat · composer)
+                 [ project Terminal — bottom split, Ctrl+` ]
 ```
 
 - Left collapse: icon rail (Ctrl+B / Alt+B).
 - Right collapse: icon strip; badges for plan/diff/activity.
 - Utility width: resizable, persisted.
 - Chat-first: right rail closed by default until plan/diff needs attention.
+- **Project terminal:** bottom dock under composer (not a rail tab). Human PTY only — never ACP client terminal. Closed by default; `Ctrl+\`` toggles; height persisted.
 
 ## Components (usage)
 
