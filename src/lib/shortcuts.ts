@@ -93,13 +93,13 @@ export const SHORTCUTS: ShortcutDef[] = [
   },
   {
     id: "next-session",
-    keys: "Ctrl+Tab",
+    keys: "Ctrl+Tab · Ctrl+PageDown",
     label: "Next open session",
     group: "sessions",
   },
   {
     id: "prev-session",
-    keys: "Ctrl+Shift+Tab",
+    keys: "Ctrl+Shift+Tab · Ctrl+PageUp",
     label: "Previous open session",
     group: "sessions",
   },

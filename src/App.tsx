@@ -1488,11 +1488,27 @@ export default function App() {
         }
       }
 
-      // Ctrl+Tab / Ctrl+Shift+Tab — cycle open sessions
-      if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
-        e.preventDefault();
-        cycleSession(e.shiftKey ? -1 : 1);
-        return;
+      // Ctrl+Tab / Ctrl+Shift+Tab — cycle open sessions (browser-style).
+      // Use e.code + capture so WebKitGTK still sees Shift+Tab; also
+      // Ctrl+PageDown / Ctrl+PageUp like Chrome.
+      if (e.ctrlKey || e.metaKey) {
+        const isTab =
+          e.code === "Tab" || e.key === "Tab" || e.key === "ISO_Left_Tab";
+        const nextTab =
+          (isTab && !e.shiftKey) ||
+          e.key === "PageDown" ||
+          e.code === "PageDown";
+        const prevTab =
+          (isTab && e.shiftKey) ||
+          e.key === "PageUp" ||
+          e.code === "PageUp" ||
+          e.key === "ISO_Left_Tab";
+        if (nextTab || prevTab) {
+          e.preventDefault();
+          e.stopPropagation();
+          cycleSession(prevTab ? -1 : 1);
+          return;
+        }
       }
 
       // Alt+P/D/A/, — inspector; Alt+B — sidebar
@@ -1557,8 +1573,9 @@ export default function App() {
 
       if (typing) return;
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture so focused inputs / WebView chrome don't swallow Ctrl(+Shift)+Tab.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [
     showShortcuts,
     showPalette,
