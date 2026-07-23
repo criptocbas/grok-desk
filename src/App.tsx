@@ -282,6 +282,13 @@ export default function App() {
         aId: string | null;
         tId: string | null;
         uId: string | null;
+        /**
+         * True while the current user bubble is still open for merge.
+         * Cleared when assistant/thought starts or turn_completed fires.
+         * Avoids relying on sessionsRef during rapid session/load replay
+         * (ref can lag one event behind setState).
+         */
+        userTurnOpen: boolean;
       }
     >
   >({});
@@ -504,9 +511,24 @@ export default function App() {
         aId: null,
         tId: null,
         uId: null,
+        userTurnOpen: false,
       };
     }
     return streamBuf.current[sessionId];
+  };
+
+  /** End a stream turn so the next user/assistant/thought gets a new bubble.
+   * Critical for session/load replay — without this, every user_message_chunk
+   * is wrongly appended into the first user bubble. */
+  const clearStreamTurn = (sessionId: string) => {
+    const buf = ensureBuf(sessionId);
+    buf.assistant = "";
+    buf.thought = "";
+    buf.user = "";
+    buf.aId = null;
+    buf.tId = null;
+    buf.uId = null;
+    buf.userTurnOpen = false;
   };
 
   const refreshStatus = useCallback(async () => {
@@ -894,12 +916,18 @@ export default function App() {
         const chunk = extractText(update.content);
         if (!chunk) return;
         const buf = ensureBuf(sessionId);
+        // User turn is closed once the agent speaks (or thinks).
+        buf.userTurnOpen = false;
+        // New assistant bubble if prior turn was cleared (resume / turn_completed).
+        if (!buf.aId) {
+          buf.aId = uid();
+          buf.assistant = "";
+        }
         buf.assistant += chunk;
         if (buf.assistant.length > MAX_ASSISTANT_CHARS) {
           buf.assistant = buf.assistant.slice(-MAX_ASSISTANT_CHARS);
         }
-        const id = buf.aId ?? uid();
-        buf.aId = id;
+        const id = buf.aId;
         const text = buf.assistant;
         patchSession(sessionId, (s) => {
           const rest = s.items.filter((i) => i.id !== id);
@@ -909,59 +937,75 @@ export default function App() {
           };
         });
       } else if (kind === "user_message_chunk") {
-        // Avoid doubles: we already add the user bubble optimistically on Send.
-        // ACP often echoes the same full text as user_message_chunk (live turn
-        // or session/load). Merge into the last user item when it matches.
+        // Live: optimistic bubble sets userTurnOpen + uId — merge only then.
+        // Resume/load: each user_message_chunk is a full turn; after agent
+        // content, userTurnOpen is false so we start a new bubble (not append).
         const chunk = extractText(update.content);
         if (!chunk) return;
-        patchSession(sessionId, (s) => {
-          const items = s.items;
-          // Prefer last user message (most recent turn / optimistic bubble)
-          let idx = -1;
-          for (let i = items.length - 1; i >= 0; i--) {
-            if (items[i].role === "user") {
-              idx = i;
-              break;
-            }
-          }
-          if (idx >= 0) {
-            const last = items[idx];
-            // Exact duplicate of optimistic send or full replay of same message
-            if (last.text === chunk) return s;
-            // Cumulative stream replacing shorter prefix
-            if (chunk.startsWith(last.text)) {
-              const next = items.slice();
-              next[idx] = { ...last, text: chunk };
-              return { ...s, items: next };
-            }
-            // Delta stream: append if not already contained
-            if (!last.text.includes(chunk)) {
-              const next = items.slice();
-              next[idx] = { ...last, text: last.text + chunk };
-              return { ...s, items: next };
-            }
-            return s;
-          }
-          // History load with no optimistic bubble yet
-          const buf = ensureBuf(sessionId);
-          if (!buf.uId) {
-            buf.uId = uid();
-            buf.user = chunk;
-          } else {
-            buf.user += chunk;
-          }
+        const buf = ensureBuf(sessionId);
+
+        if (buf.userTurnOpen && buf.uId) {
           const id = buf.uId;
-          const text = buf.user;
-          const rest = items.filter((i) => i.id !== id);
-          return {
-            ...s,
-            items: [...rest, { id, role: "user", text }],
-          };
-        });
+          if (buf.user === chunk) return;
+          // Cumulative full-text stream (ACP replaces with longer prefix)
+          if (chunk.startsWith(buf.user) && chunk.length >= buf.user.length) {
+            buf.user = chunk;
+            patchSession(sessionId, (s) => {
+              const i2 = s.items.findIndex((it) => it.id === id);
+              if (i2 < 0) {
+                return {
+                  ...s,
+                  items: [...s.items, { id, role: "user", text: chunk }],
+                };
+              }
+              const next = s.items.slice();
+              next[i2] = { ...next[i2], text: chunk };
+              return { ...s, items: next };
+            });
+            return;
+          }
+          // Live delta append
+          if (!buf.user.includes(chunk) && !chunk.startsWith(buf.user)) {
+            buf.user = buf.user + chunk;
+            const text = buf.user;
+            patchSession(sessionId, (s) => {
+              const i2 = s.items.findIndex((it) => it.id === id);
+              if (i2 < 0) {
+                return {
+                  ...s,
+                  items: [...s.items, { id, role: "user", text }],
+                };
+              }
+              const next = s.items.slice();
+              next[i2] = { ...next[i2], text };
+              return { ...s, items: next };
+            });
+            return;
+          }
+          // Exact / already-contained echo
+          if (buf.user.includes(chunk) || chunk === buf.user) return;
+        }
+
+        // New user turn (session load after agent replied, or first message)
+        clearStreamTurn(sessionId);
+        const id = uid();
+        const b = ensureBuf(sessionId);
+        b.uId = id;
+        b.user = chunk;
+        b.userTurnOpen = true;
+        patchSession(sessionId, (s) => ({
+          ...s,
+          items: [...s.items, { id, role: "user" as const, text: chunk }],
+        }));
       } else if (kind === "agent_thought_chunk") {
         const chunk = extractText(update.content);
         if (!chunk) return;
         const buf = ensureBuf(sessionId);
+        buf.userTurnOpen = false;
+        if (!buf.tId) {
+          buf.tId = uid();
+          buf.thought = "";
+        }
         buf.thought += chunk;
         // Cap hard — unbounded thoughts OOM the webview (crash mid-run).
         if (buf.thought.length > MAX_THOUGHT_CHARS) {
@@ -969,8 +1013,7 @@ export default function App() {
             "…[thought truncated]…\n" +
             buf.thought.slice(-MAX_THOUGHT_CHARS);
         }
-        const id = buf.tId ?? uid();
-        buf.tId = id;
+        const id = buf.tId;
         const text = buf.thought;
         patchSession(sessionId, (s) => {
           const rest = s.items.filter((i) => i.id !== id);
@@ -1012,6 +1055,8 @@ export default function App() {
           }));
         }
       } else if (kind === "tool_call" || kind === "tool_call_update") {
+        // Tools close the user-merge window (same as agent speech).
+        ensureBuf(sessionId).userTurnOpen = false;
         const planFromTool = planFromTodoInput(update.rawInput ?? update);
         const id =
           (update.toolCallId as string) ||
@@ -1382,6 +1427,9 @@ export default function App() {
           return { ...s, tools, backgroundTasks: tasks };
         });
       } else if (kind === "turn_completed") {
+        // Close stream ids so the next turn's chunks don't merge into this one
+        // (session/load replays many turns through the same listener).
+        clearStreamTurn(sessionId);
         // Defensive: close tools that never got a terminal status.
         // Leave backgrounded tools alone — they outlive the turn.
         patchSession(sessionId, (s) => ({
@@ -1701,6 +1749,7 @@ export default function App() {
         aId: null,
         tId: null,
         uId: null,
+        userTurnOpen: false,
       };
       await refreshDisk();
     } catch (e) {
@@ -1808,6 +1857,7 @@ export default function App() {
         aId: null,
         tId: null,
         uId: null,
+        userTurnOpen: false,
       };
       if (activate) setCwd(d.cwd);
 
@@ -2158,6 +2208,7 @@ export default function App() {
     buf.tId = null;
     const userMsgId = uid();
     buf.uId = userMsgId;
+    buf.userTurnOpen = true;
 
     cancelRequested.current.delete(sessionId);
     lastActivityRef.current[sessionId] = Date.now();
@@ -2226,6 +2277,7 @@ export default function App() {
       b.aId = null;
       b.tId = null;
       b.uId = null;
+      b.userTurnOpen = false;
 
       const doneLabel = wasCancelled
         ? `Turn ended after stop${model}${out}`
@@ -2618,6 +2670,7 @@ export default function App() {
     buf.tId = null;
     const userMsgId = uid();
     buf.uId = userMsgId;
+    buf.userTurnOpen = true;
     patchSession(sessionId, (s) => ({
       ...s,
       busy: true,
@@ -2632,6 +2685,7 @@ export default function App() {
       b.aId = null;
       b.tId = null;
       b.uId = null;
+      b.userTurnOpen = false;
       patchSession(sessionId, (s) => ({
         ...s,
         busy: false,
