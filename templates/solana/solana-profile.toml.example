@@ -1,0 +1,40 @@
+# Example Grok config snippets for Solana-heavy machines.
+# Merge carefully into ~/.grok/config.toml (user) or project .grok/config.toml.
+# DO NOT commit real API keys, tokens, or private RPC URLs with embedded secrets.
+# Prefer environment variable references where the CLI supports them.
+
+# --- Models / permissions (user preference) ---
+# [models]
+# default = "grok-build"
+#
+# [ui]
+# permission_mode = "always-approve"   # fine for localnet; use ask in Desk for deploy work
+
+# --- Skills: keep Claude-compat on so solana-dev etc. resolve ---
+# [compat.claude]
+# skills = true
+
+# Optional extra skill search paths (if you vendor playbooks elsewhere)
+# [skills]
+# paths = ["~/Documents/Programming/solana/_agent-skills"]
+# ignore = []
+# disabled = []
+
+# --- MCP: optional read-only integrations only ---
+# Configure with: grok mcp add ...
+# Example shape (verify package name before use):
+#
+# [mcp_servers.github]
+# # often already configured via managed integrations
+#
+# [mcp_servers.readonly_rpc]
+# command = "npx"
+# args = ["-y", "REPLACE_WITH_REAL_PACKAGE"]
+# env = { RPC_URL = "${SOLANA_RPC_URL}" }
+# enabled = false
+#
+# Never point MCP at a signer or keypair path.
+
+# --- Folder trust ---
+# Project MCP/hooks only run when the folder is trusted.
+# Use /hooks-trust in the TUI or your usual trust flow for Solana repos.

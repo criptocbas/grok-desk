@@ -88,10 +88,19 @@ Requires the original git checkout path (stored in install-meta) and network for
 grok-desk/
 ├── src/                 # React UI
 ├── src-tauri/           # Rust: ACP bridge + Tauri commands
+├── docs/solana-workhorse/  # Agent-first Solana packaging (no domain UI)
+├── templates/solana/    # AGENTS.md + dogfood kits for Solana repos
+├── .grok/workflows/     # solana-security-pass, solana-test-matrix, idl-client-sync
 ├── ARCHITECTURE.md
 ├── ROADMAP.md
 └── AGENTS.md            # Instructions for coding agents working on this repo
 ```
+
+## Solana workhorse (agent-first)
+
+Desk is not a Solana IDE fork. Strong multi-session + plan/diff/activity, plus skills and workflows, is enough for blockchain work.
+
+See **[docs/solana-workhorse/](./docs/solana-workhorse/)** for inventory, dogfood kit, profile, MCP notes, and upgrade ranking. Copy [`templates/solana/AGENTS.md`](./templates/solana/AGENTS.md) into Solana repos; workflows live under [`.grok/workflows/`](./.grok/workflows/).
 
 ## Roadmap
 
