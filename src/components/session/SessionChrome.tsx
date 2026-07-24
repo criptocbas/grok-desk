@@ -1,3 +1,4 @@
+import { useEffect, useId, useRef, useState } from "react";
 import type {
   DeskSession,
   EffortOption,
@@ -6,6 +7,24 @@ import type {
 } from "../../types";
 import type { InspectorTab } from "../InspectorRail";
 import { SessionTitleLabel } from "./SessionTitleLabel";
+
+const CONTROLS_KEY = "grok-desk.chrome.controlsOpen";
+
+function loadControlsOpen(): boolean {
+  try {
+    return localStorage.getItem(CONTROLS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveControlsOpen(open: boolean) {
+  try {
+    localStorage.setItem(CONTROLS_KEY, open ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 
 type Props = {
   session: DeskSession;
@@ -27,11 +46,16 @@ type Props = {
     effort?: string | null,
   ) => void;
   onPermissionMode: (sessionId: string, mode: PermissionMode) => void;
-  onInspectorTab: (tab: InspectorTab | null | ((t: InspectorTab | null) => InspectorTab | null)) => void;
-  /** Optional file-tree toggle (Alt+F). */
+  onInspectorTab: (
+    tab: InspectorTab | null | ((t: InspectorTab | null) => InspectorTab | null),
+  ) => void;
   fileTreeOpen?: boolean;
   onToggleFileTree?: () => void;
 };
+
+function shortModelName(name: string) {
+  return name.replace(/^Grok\s+/i, "").trim() || name;
+}
 
 export function SessionChrome({
   session,
@@ -54,9 +78,56 @@ export function SessionChrome({
   onToggleFileTree,
 }: Props) {
   const reviewCount = session.reviewComments?.length ?? 0;
+  const [controlsOpen, setControlsOpen] = useState(loadControlsOpen);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const controlsId = useId();
+
+  useEffect(() => {
+    saveControlsOpen(controlsOpen);
+  }, [controlsOpen]);
+
+  useEffect(() => {
+    if (!controlsOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!panelRef.current?.contains(e.target as Node)) {
+        setControlsOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setControlsOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [controlsOpen]);
+
+  const modelId = session.modelId || infoModelId || "";
+  const modelOpt = sessionModels.find((m) => m.modelId === modelId);
+  const modelLabel = shortModelName(
+    modelOpt?.name || modelId || "Model",
+  );
+  const effortVal = session.reasoningEffort || infoEffort || "high";
+  const effortLabel =
+    effortOptions.find((e) => (e.value || e.id) === effortVal)?.label ||
+    effortVal;
+  const permsLabel =
+    session.permissionMode === "always-approve" ? "Always" : "Ask";
+  const summaryParts = [modelLabel];
+  if (supportsEffort) summaryParts.push(effortLabel);
+  summaryParts.push(permsLabel);
+  const controlsSummary = summaryParts.join(" · ");
+
+  const showReviewChip = reviewCount > 0 && inspectorTab !== "diff";
+  const showGitChip = gitFileCount > 0 && inspectorTab !== "diff";
+  const showPlanBadge = planBadge && inspectorTab !== "plan";
+  const showDiffBadge = diffBadge && inspectorTab !== "diff";
 
   return (
     <div className="border-b border-[var(--border)] bg-[var(--bg-elevated)]/80">
+      {/* Row 1 — identity + attention */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2">
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold text-[var(--text)]">
@@ -78,7 +149,7 @@ export function SessionChrome({
           <button
             type="button"
             onClick={onPinToggle}
-            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+            className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
               isPinned
                 ? "bg-[var(--accent)]/15 text-[var(--accent)]"
                 : "bg-[var(--bg-panel)] text-[var(--text-muted)] hover:text-[var(--accent)]"
@@ -88,25 +159,25 @@ export function SessionChrome({
                 ? "Unpin — won’t auto-open on next launch"
                 : "Pin — reopen after Desk restart"
             }
+            aria-pressed={isPinned}
           >
-            {isPinned ? "📌 Pinned" : "Pin"}
+            {isPinned ? "Pinned" : "Pin"}
           </button>
           {session.modeId === "plan" && (
             <span className="rounded-full bg-[var(--thought)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--thought)]">
               plan mode
             </span>
           )}
-          {reviewCount > 0 && (
+          {showReviewChip && (
             <button
               type="button"
               onClick={() => onInspectorTab("diff")}
               className="rounded-full bg-[var(--warning)]/15 px-2 py-0.5 text-[10px] font-medium text-[var(--warning)] hover:bg-[var(--warning)]/25"
             >
-              {reviewCount} review note
-              {reviewCount === 1 ? "" : "s"}
+              {reviewCount} review
             </button>
           )}
-          {gitFileCount > 0 && (
+          {showGitChip && (
             <button
               type="button"
               onClick={() => onInspectorTab("diff")}
@@ -118,88 +189,129 @@ export function SessionChrome({
         </div>
       </div>
 
+      {/* Row 2 — compact controls + rail toggles */}
       <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)]/70 px-4 py-1.5">
-        <label className="flex items-center gap-1.5" title="Session model">
-          <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-            Model
-          </span>
-          <select
-            value={session.modelId || infoModelId || ""}
-            disabled={session.busy || sessionModels.length === 0}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (!next) return;
-              onApplyModel(session.sessionId, next, session.reasoningEffort);
-            }}
-            className="ctrl-select"
-          >
-            {sessionModels.length === 0 ? (
-              <option value="">
-                {session.modelId || infoModelId || "—"}
-              </option>
-            ) : (
-              sessionModels.map((m) => (
-                <option key={m.modelId} value={m.modelId}>
-                  {m.name || m.modelId}
-                </option>
-              ))
-            )}
-          </select>
-        </label>
-
-        {supportsEffort && (
-          <label
-            className="flex items-center gap-1.5"
-            title="Reasoning effort"
-          >
-            <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-              Effort
-            </span>
-            <select
-              value={session.reasoningEffort || infoEffort || "high"}
-              disabled={session.busy || !session.modelId}
-              onChange={(e) => {
-                const modelId = session.modelId || infoModelId;
-                if (!modelId) return;
-                onApplyModel(session.sessionId, modelId, e.target.value);
-              }}
-              className="ctrl-select"
-            >
-              {effortOptions.map((e) => (
-                <option key={e.id || e.value} value={e.value || e.id}>
-                  {e.label || e.value}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-
-        <label
-          className="flex items-center gap-1.5"
-          title="Tool permission policy for this tab"
-        >
-          <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-            Perms
-          </span>
-          <select
-            value={session.permissionMode || "default"}
-            disabled={session.busy}
-            onChange={(e) =>
-              onPermissionMode(
-                session.sessionId,
-                e.target.value as PermissionMode,
-              )
-            }
-            className={`ctrl-select ${
-              session.permissionMode === "always-approve"
-                ? "border-[var(--warning)]/50 text-[var(--warning)]"
-                : ""
+        <div className="relative" ref={panelRef}>
+          <button
+            type="button"
+            id={controlsId}
+            aria-expanded={controlsOpen}
+            aria-haspopup="dialog"
+            onClick={() => setControlsOpen((v) => !v)}
+            title="Model, effort, permissions"
+            className={`max-w-[min(20rem,50vw)] truncate rounded-md border px-2 py-1 text-left text-[11px] font-medium transition ${
+              controlsOpen
+                ? "border-[var(--accent)]/50 bg-[var(--accent)]/10 text-[var(--accent)]"
+                : session.permissionMode === "always-approve"
+                  ? "border-[var(--warning)]/40 text-[var(--warning)] hover:bg-[var(--bg-hover)]"
+                  : "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]"
             }`}
           >
-            <option value="default">Ask</option>
-            <option value="always-approve">Always approve</option>
-          </select>
-        </label>
+            {controlsSummary}
+            <span className="ml-1.5 text-[var(--text-faint)]" aria-hidden>
+              {controlsOpen ? "▴" : "▾"}
+            </span>
+          </button>
+
+          {controlsOpen && (
+            <div
+              role="dialog"
+              aria-labelledby={controlsId}
+              className="absolute left-0 top-full z-30 mt-1 min-w-[16rem] rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3 shadow-[var(--shadow-panel)]"
+            >
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
+                Session controls
+              </div>
+              <div className="flex flex-col gap-2.5">
+                <label className="flex flex-col gap-1" title="Session model">
+                  <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                    Model
+                  </span>
+                  <select
+                    value={modelId}
+                    disabled={session.busy || sessionModels.length === 0}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!next) return;
+                      onApplyModel(
+                        session.sessionId,
+                        next,
+                        session.reasoningEffort,
+                      );
+                    }}
+                    className="ctrl-select max-w-none w-full"
+                  >
+                    {sessionModels.length === 0 ? (
+                      <option value="">
+                        {session.modelId || infoModelId || "—"}
+                      </option>
+                    ) : (
+                      sessionModels.map((m) => (
+                        <option key={m.modelId} value={m.modelId}>
+                          {m.name || m.modelId}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+
+                {supportsEffort && (
+                  <label
+                    className="flex flex-col gap-1"
+                    title="Reasoning effort"
+                  >
+                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                      Effort
+                    </span>
+                    <select
+                      value={effortVal}
+                      disabled={session.busy || !session.modelId}
+                      onChange={(e) => {
+                        const mid = session.modelId || infoModelId;
+                        if (!mid) return;
+                        onApplyModel(session.sessionId, mid, e.target.value);
+                      }}
+                      className="ctrl-select max-w-none w-full"
+                    >
+                      {effortOptions.map((e) => (
+                        <option key={e.id || e.value} value={e.value || e.id}>
+                          {e.label || e.value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                <label
+                  className="flex flex-col gap-1"
+                  title="Tool permission policy for this tab"
+                >
+                  <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                    Permissions
+                  </span>
+                  <select
+                    value={session.permissionMode || "default"}
+                    disabled={session.busy}
+                    onChange={(e) =>
+                      onPermissionMode(
+                        session.sessionId,
+                        e.target.value as PermissionMode,
+                      )
+                    }
+                    className={`ctrl-select max-w-none w-full ${
+                      session.permissionMode === "always-approve"
+                        ? "border-[var(--warning)]/50 text-[var(--warning)]"
+                        : ""
+                    }`}
+                  >
+                    <option value="default">Ask</option>
+                    <option value="always-approve">Always approve</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className="ml-auto flex items-center gap-1">
           {onToggleFileTree && (
@@ -229,7 +341,7 @@ export function SessionChrome({
             title="Plan (Alt+P)"
           >
             Plan
-            {planBadge ? (
+            {showPlanBadge ? (
               <span className="mono ml-1 opacity-70">{planBadge}</span>
             ) : null}
           </button>
@@ -246,7 +358,7 @@ export function SessionChrome({
             title="Diff (Alt+D)"
           >
             Diff
-            {diffBadge ? (
+            {showDiffBadge ? (
               <span className="mono ml-1 opacity-70">{diffBadge}</span>
             ) : null}
           </button>

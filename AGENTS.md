@@ -67,7 +67,9 @@ src-tauri/src/git.rs             # git status / diff for Diff pane
 src-tauri/src/lib.rs             # Tauri commands
 ```
 
-**UI structure rule:** Prefer new surfaces under `components/{layout,chat,session,command}/`. Do not re-monolith `App.tsx`. Keep caps, stall recovery, and plan-approval wiring intact when extracting.
+**UI structure rule:** Prefer new surfaces under `components/{layout,chat,session,command}/`. Do not re-monolith `App.tsx`. Prefer hooks under `src/hooks/` (e.g. `useGitDiff`) for state clusters. Keep caps, stall recovery, and plan-approval wiring intact when extracting.
+
+**Quiet default:** Titlebar = app/agent only. Session model/effort/perms collapse behind one chip. Don't mirror Plan/Diff badges when that rail tab is open.
 
 ## Docs for agents
 

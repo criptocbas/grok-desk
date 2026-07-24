@@ -413,30 +413,32 @@ export function Composer({
             )}
           </div>
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-faint)]">
-          <span>
-            <span className="kbd">/</span> commands
-            {slashCommands.length > 0 ? ` · ${slashCommands.length}` : ""}
-          </span>
-          <span>
-            <span className="kbd">Alt</span>+<span className="kbd">P</span> plan
-          </span>
-          <span>
-            <span className="kbd">Alt</span>+<span className="kbd">D</span> diff
-          </span>
-          <span>
-            <span className="kbd">Ctrl</span>+
-            <span className="kbd">/</span> shortcuts
-          </span>
-          <span title="Screenshots: focus composer, then Ctrl+V">
-            paste / 🖼 attach images
-          </span>
-          {busy && (
-            <span className="text-[var(--warning)]">
-              Composer stays open — queue the next job anytime
+        {/* Hints only when idle + empty; busy shows queue note only if needed */}
+        {!prompt.trim() && pendingImages.length === 0 && !busy && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-faint)]">
+            <span>
+              <span className="kbd">/</span> commands
+              {slashCommands.length > 0 ? ` · ${slashCommands.length}` : ""}
             </span>
-          )}
-        </div>
+            <span>
+              <span className="kbd">Ctrl</span>+
+              <span className="kbd">K</span> desk
+            </span>
+            <span title="Focus composer, then paste">
+              paste images
+            </span>
+          </div>
+        )}
+        {busy && promptQueue.length > 0 && (
+          <div className="mt-1.5 text-[10px] text-[var(--warning)]">
+            Queued prompts run after this turn
+          </div>
+        )}
+        {busy && promptQueue.length === 0 && !prompt.trim() && (
+          <div className="mt-1.5 text-[10px] text-[var(--text-faint)]">
+            Enter queues the next message while this turn runs
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,32 +1,34 @@
-import type { AgentInfo, AppVersionInfo, GrokStatus } from "../../types";
+import type { AppVersionInfo } from "../../types";
 
 type Props = {
   running: boolean;
   headerStatus: string;
   activeBusy?: boolean;
   activePermissionCount?: number;
-  info: AgentInfo | null;
-  grok: GrokStatus | null;
+  /** Short tier label only (e.g. SuperGrok Heavy) — optional, compact. */
+  tierLabel?: string | null;
   appVersion?: AppVersionInfo | null;
   updateAvailable?: boolean;
   onShowShortcuts: () => void;
   onOpenUpdates?: () => void;
 };
 
+/**
+ * App chrome only: connection + updates + help.
+ * Session detail, email, CLI version live in Settings → About.
+ */
 export function Titlebar({
   running,
   headerStatus,
   activeBusy,
   activePermissionCount,
-  info,
-  grok,
+  tierLabel,
   appVersion,
   updateAvailable,
   onShowShortcuts,
   onOpenUpdates,
 }: Props) {
   const ver = appVersion?.version ?? "0.9";
-  const short = appVersion?.commitShort;
   return (
     <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2">
       <div className="flex items-center gap-2.5">
@@ -36,15 +38,13 @@ export function Titlebar({
               ? "bg-[var(--success)] shadow-[0_0_10px_var(--success)]"
               : "bg-[var(--text-faint)]"
           }`}
+          title={running ? "Agent connected" : "Agent disconnected"}
         />
         <div className="flex flex-col leading-tight">
           <span className="text-[13px] font-semibold tracking-wide">
             Grok Desk
           </span>
-          <span className="text-[10px] text-[var(--text-faint)]">
-            v{ver}
-            {short ? ` · ${short}` : ""} · mission control
-          </span>
+          <span className="text-[10px] text-[var(--text-faint)]">v{ver}</span>
         </div>
       </div>
       <div className="ml-auto flex items-center gap-2 text-xs text-[var(--text-muted)]">
@@ -61,21 +61,11 @@ export function Titlebar({
         >
           {headerStatus}
         </span>
-        {info?.subscriptionTier && (
-          <span className="hidden rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] text-[var(--accent)] sm:inline">
-            {info.subscriptionTier}
+        {tierLabel ? (
+          <span className="hidden rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] text-[var(--accent)] md:inline">
+            {tierLabel}
           </span>
-        )}
-        {info?.authEmail && (
-          <span className="hidden max-w-[12rem] truncate lg:inline">
-            {info.authEmail}
-          </span>
-        )}
-        {grok?.version && (
-          <span className="mono hidden rounded-md bg-[var(--bg-panel)] px-2 py-0.5 text-[10px] xl:inline">
-            {grok.version.replace(/^grok\s+/i, "")}
-          </span>
-        )}
+        ) : null}
         {updateAvailable && onOpenUpdates && (
           <button
             type="button"

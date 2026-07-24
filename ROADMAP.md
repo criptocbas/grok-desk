@@ -44,7 +44,17 @@
 - [x] Stop unlocks UI immediately + stall banner with Unlock
 - [x] Richer markdown, plan expand, image paste
 
-## Phase 3 — Workspace ← **in progress**
+## Phase 3.5 — Quiet polish ← **in progress**
+
+Keep it simple yet extremely functional. No new surfaces until the default path feels calm.
+
+- [x] Quieting: slim titlebar (About in Settings), collapsed session controls, de-duped Plan/Diff chips, composer hints only when empty
+- [x] Re-thin (partial): `useGitDiff`, `useComposerDrafts`, `usePinsAndGroups`, `useLayoutChrome`
+- [ ] Re-thin (remaining): `useSessionStore`, `useAcpBridge`, `useSessionActions`
+- [ ] Heavy-run transcript / activity hierarchy
+- [ ] Smoke checklist + docs freeze
+
+## Phase 3 — Workspace ← **nearly complete**
 
 Priority order is flexible; pick with the user:
 

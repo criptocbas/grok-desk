@@ -11,6 +11,7 @@ Inspired by Linear / Raycast / Cursor surfaces, with a forge identity (not gener
 3. **Progressive disclosure** — agent complexity (tools, plans, raw JSON) opens on demand.
 4. **Protect reliability chrome** — stall banner, Stop/Unlock, caps, plan handshake stay first-class.
 5. **Keyboard first** — every primary action has a shortcut; focus rings always visible on keyboard.
+6. **Quiet default path** — default view is session + transcript + composer. Titlebar = app/agent only. Session model/effort/perms collapse behind one chip. Rail owns Plan/Diff detail; don't mirror badges when that tab is open.
 
 ## Canvas & surfaces (dark-first)
 

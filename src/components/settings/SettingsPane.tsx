@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentInfo,
   AppVersionInfo,
+  GrokStatus,
   UpdateCheckResult,
   UpdatePhase,
   UpdateStartResult,
@@ -73,6 +75,9 @@ type Props = {
   onCheckUpdates?: () => void;
   onStartUpdate?: () => void;
   onRestartApp?: () => void;
+  /** Agent / account details (kept out of titlebar for a quieter chrome). */
+  agentInfo?: AgentInfo | null;
+  grokStatus?: GrokStatus | null;
 };
 
 export function SettingsPane({
@@ -82,6 +87,8 @@ export function SettingsPane({
   onCheckUpdates,
   onStartUpdate,
   onRestartApp,
+  agentInfo,
+  grokStatus,
 }: Props = {}) {
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [localVersion, setLocalVersion] = useState<AppVersionInfo | null>(null);
@@ -252,6 +259,62 @@ export function SettingsPane({
           <option value="teal">Electric teal</option>
         </select>
       </Field>
+
+      {/* ── About (moved from titlebar) ───────────────────────────────── */}
+      {(agentInfo || grokStatus) && (
+        <>
+          <div className="mb-2 mt-5">
+            <h2 className="text-[12px] font-semibold tracking-wide text-[var(--text)]">
+              About
+            </h2>
+            <p className="mt-0.5 text-[11px] text-[var(--text-faint)]">
+              Account and CLI — kept out of the title bar on purpose.
+            </p>
+          </div>
+          <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-3 text-[11px]">
+            {agentInfo?.subscriptionTier && (
+              <div className="flex justify-between gap-2">
+                <span className="text-[var(--text-faint)]">Tier</span>
+                <span className="text-[var(--accent)]">
+                  {agentInfo.subscriptionTier}
+                </span>
+              </div>
+            )}
+            {agentInfo?.authEmail && (
+              <div className="flex justify-between gap-2">
+                <span className="text-[var(--text-faint)]">Account</span>
+                <span className="min-w-0 truncate text-[var(--text)]">
+                  {agentInfo.authEmail}
+                </span>
+              </div>
+            )}
+            {agentInfo?.modelId && (
+              <div className="flex justify-between gap-2">
+                <span className="text-[var(--text-faint)]">Default model</span>
+                <span className="mono text-[var(--text-muted)]">
+                  {agentInfo.modelId}
+                </span>
+              </div>
+            )}
+            {grokStatus?.version && (
+              <div className="flex justify-between gap-2">
+                <span className="text-[var(--text-faint)]">CLI</span>
+                <span className="mono text-[var(--text-muted)]">
+                  {grokStatus.version.replace(/^grok\s+/i, "")}
+                </span>
+              </div>
+            )}
+            {versionInfo?.commitShort && (
+              <div className="flex justify-between gap-2">
+                <span className="text-[var(--text-faint)]">Desk</span>
+                <span className="mono text-[var(--text-muted)]">
+                  v{versionInfo.version} · {versionInfo.commitShort}
+                </span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* ── App install & updates ─────────────────────────────────────── */}
       <div className="mb-2 mt-5">

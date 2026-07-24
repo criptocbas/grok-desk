@@ -118,9 +118,19 @@ Human project shell is a bottom dock (`Ctrl+\``), not an inspector tab. ACP `ter
 Project file tree is a resizable strip left of chat (`Alt+F`); opens files via the OS opener — not an in-app editor.
 
 - **Design tokens:** `src/index.css` + `src/DESIGN.md` (surface ladder, accent, density).
-- **App.tsx** wires ACP session state and composes layout components — keep it orchestration-only.
-- Caps, stall detection, plan approval, and git auto-refresh live in App/hooks — not reimplemented in panes.
+- **App.tsx** composes layout + hooks — prefer new state in `src/hooks/`, not a re-monolith.
+- Caps, stall detection, plan approval live with session/ACP path; git auto-refresh in `useGitDiff`.
 - **UI prefs:** `grok-desk.prefs.v1` (theme/density/accent), `grok-desk.layout.v1` (utility width).
+
+### Frontend hooks (re-thin progress)
+
+| Hook | Owns |
+|------|------|
+| `useGitDiff` | git status/diff, selection, debounced refresh |
+| `useComposerDrafts` | prompt/images per-tab drafts, slash dismiss flags |
+| `usePinsAndGroups` | pins, groups, reorder, pin/unpin (not agent resume) |
+| `useLayoutChrome` | sidebar, inspector, terminal, file tree, palette/help flags |
+| *(planned)* `useSessionStore` / `useAcpBridge` / `useSessionActions` | sessions, listeners, connect/send |
 
 ## Key files
 

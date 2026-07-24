@@ -15,7 +15,6 @@ import type {
   AvailableCommand,
   DeskSession,
   DiskSession,
-  GitFileStatus,
   GrokStatus,
   ModelOption,
   PermissionMode,
@@ -25,7 +24,6 @@ import type {
   ReviewComment,
   SessionInfo,
   SessionPin,
-  SessionGroupsState,
   GroupResumeTarget,
   UpdateCheckResult,
   UpdatePhase,
@@ -34,10 +32,7 @@ import type {
 import { PlanPane } from "./components/PlanPane";
 import { DiffPane } from "./components/DiffPane";
 import { ActivityPane } from "./components/ActivityPane";
-import {
-  InspectorRail,
-  type InspectorTab,
-} from "./components/InspectorRail";
+import { InspectorRail } from "./components/InspectorRail";
 import {
   filterCommands,
   getSlashMatch,
@@ -69,10 +64,8 @@ import {
   notifyOs,
   pickAllowOption,
   readFileAsDataUrl,
-  type PendingImage,
 } from "./lib/agentHelpers";
 import {
-  GIT_REFRESH_DEBOUNCE_MS,
   MAX_ASSISTANT_CHARS,
   MAX_THOUGHT_CHARS,
   MAX_TRANSCRIPT_ITEMS,
@@ -95,10 +88,7 @@ import { PermissionBanner } from "./components/chat/PermissionBanner";
 import { WatchingBanner } from "./components/chat/WatchingBanner";
 import { TranscriptList } from "./components/chat/TranscriptList";
 import { Composer } from "./components/chat/Composer";
-import {
-  TerminalDock,
-  loadTerminalOpen,
-} from "./components/terminal/TerminalDock";
+import { TerminalDock } from "./components/terminal/TerminalDock";
 import { Titlebar } from "./components/layout/Titlebar";
 import { UpdateBanner } from "./components/layout/UpdateBanner";
 import { LeftNavigator } from "./components/layout/LeftNavigator";
@@ -110,12 +100,12 @@ import {
   CommandPalette,
   type PaletteCommand,
 } from "./components/command/CommandPalette";
-import {
-  FileTreePane,
-  loadFileTreeOpen,
-  saveFileTreeOpen,
-} from "./components/files/FileTreePane";
+import { FileTreePane } from "./components/files/FileTreePane";
 import { CoachMarks } from "./components/layout/CoachMarks";
+import { useGitDiff } from "./hooks/useGitDiff";
+import { useComposerDrafts } from "./hooks/useComposerDrafts";
+import { usePinsAndGroups } from "./hooks/usePinsAndGroups";
+import { useLayoutChrome } from "./hooks/useLayoutChrome";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 export default function App() {
@@ -125,39 +115,9 @@ export default function App() {
   const [sessions, setSessions] = useState<DeskSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("");
-  const [prompt, setPrompt] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diskSessions, setDiskSessions] = useState<DiskSession[]>([]);
-  const [showRecents, setShowRecents] = useState(false);
-  /** Bookmarks that survive app restarts (`~/.config/grok-desk/pins.json`). */
-  const [pins, setPins] = useState<SessionPin[]>([]);
-  const [resumingPins, setResumingPins] = useState(false);
-  const pinsRestoredRef = useRef(false);
-  const [sessionGroups, setSessionGroups] = useState<SessionGroupsState>({
-    groups: [],
-    membership: {},
-  });
-  /** Right inspector: closed by default — chat-first. */
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
-  /** Bottom project shell — chat-first; open state persisted. */
-  const [terminalOpen, setTerminalOpen] = useState(loadTerminalOpen);
-  /** Project file tree — left of chat; open state persisted. */
-  const [fileTreeOpen, setFileTreeOpen] = useState(loadFileTreeOpen);
-  /** When true, global shortcuts must not steal keys from the shell. */
-  const [terminalFocused, setTerminalFocused] = useState(false);
-  /** Bump to remount TerminalPane after palette “Restart shell”. */
-  const [shellEpoch, setShellEpoch] = useState(0);
-  /** Left rail collapsed for focus mode (persisted). */
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem("grok-desk.sidebarCollapsed") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [showShortcuts, setShowShortcuts] = useState(false);
-  const [showPalette, setShowPalette] = useState(false);
   /** Desktop install version + GitHub update check. */
   const [appVersion, setAppVersion] = useState<AppVersionInfo | null>(null);
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(
@@ -165,21 +125,9 @@ export default function App() {
   );
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
-  const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
-  const [gitIsRepo, setGitIsRepo] = useState<boolean | null>(null);
-  const [gitPatch, setGitPatch] = useState("");
-  const [gitSelected, setGitSelected] = useState<string | null>(null);
-  const [gitError, setGitError] = useState<string | null>(null);
-  const [gitLoading, setGitLoading] = useState(false);
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [stderrTail, setStderrTail] = useState<string[]>([]);
   /** Ticks while busy so stall banner can recompute. */
   const [clock, setClock] = useState(() => Date.now());
-  /** Composer caret — drives slash palette matching. */
-  const [composerCursor, setComposerCursor] = useState(0);
-  const [slashIndex, setSlashIndex] = useState(0);
-  /** Esc hides palette until the /token changes. */
-  const [slashDismissed, setSlashDismissed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   /** Avoid stale closures when answering plan approval reverse-requests. */
@@ -188,9 +136,94 @@ export default function App() {
   sessionsRef.current = sessions;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
-  const gitSelectedRef = useRef(gitSelected);
-  gitSelectedRef.current = gitSelected;
-  const gitRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const {
+    prompt,
+    setPrompt,
+    pendingImages,
+    setPendingImages,
+    composerCursor,
+    setComposerCursor,
+    slashIndex,
+    setSlashIndex,
+    slashDismissed,
+    setSlashDismissed,
+    saveDraft,
+    loadDraft,
+    clearDraft,
+    clearAllDrafts,
+  } = useComposerDrafts();
+
+  const getSessionCwd = useCallback((sessionId: string) => {
+    return sessionsRef.current.find((x) => x.sessionId === sessionId)?.cwd;
+  }, []);
+
+  const getOpenSession = useCallback((sessionId: string) => {
+    const s = sessionsRef.current.find((x) => x.sessionId === sessionId);
+    return s ? { cwd: s.cwd, title: s.title } : undefined;
+  }, []);
+
+  const onHookError = useCallback((message: string) => {
+    setError(message);
+  }, []);
+
+  const {
+    pins,
+    setPins,
+    resumingPins,
+    setResumingPins,
+    pinsRestoredRef,
+    sessionGroups,
+    refreshPins,
+    refreshGroups,
+    isPinned,
+    pinSession,
+    unpinSession,
+    reorderPins,
+    createGroup,
+    renameGroup,
+    deleteGroup,
+    setGroupCollapsed,
+    setSessionGroup,
+    setGroupPinned,
+  } = usePinsAndGroups({ getOpenSession, onError: onHookError });
+
+  const {
+    inspectorTab,
+    setInspectorTab,
+    terminalOpen,
+    setTerminalOpen,
+    fileTreeOpen,
+    closeFileTree,
+    terminalFocused,
+    setTerminalFocused,
+    shellEpoch,
+    setShellEpoch,
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    toggleSidebar,
+    toggleFileTree,
+    showShortcuts,
+    setShowShortcuts,
+    showPalette,
+    setShowPalette,
+    showRecents,
+    setShowRecents,
+  } = useLayoutChrome();
+
+  const {
+    gitFiles,
+    gitIsRepo,
+    gitPatch,
+    gitSelected,
+    gitError,
+    gitLoading,
+    gitSelectedRef,
+    refreshGit,
+    scheduleGitRefresh,
+    selectGitFile: selectGitFileAt,
+  } = useGitDiff({ activeId, getSessionCwd });
+
   /** sessionIds where user hit Stop — late prompt resolve should not re-busy. */
   const cancelRequested = useRef<Set<string>>(new Set());
   /** sessionIds with an in-flight session/prompt (busy may be false after Stop). */
@@ -201,39 +234,8 @@ export default function App() {
   const lastActivityRef = useRef<Record<string, number>>({});
   /** Re-render when stick-to-bottom flips so “Jump to latest” can show. */
   const [stickTick, setStickTick] = useState(0);
-  /** Per-session composer drafts (prompt + images) so tab switch never loses input. */
-  const draftsRef = useRef<
-    Record<string, { prompt: string; images: PendingImage[] }>
-  >({});
-  const promptRef = useRef(prompt);
-  promptRef.current = prompt;
-  const pendingImagesRef = useRef(pendingImages);
-  pendingImagesRef.current = pendingImages;
 
   const NEAR_BOTTOM_PX = 96;
-
-  const saveDraft = useCallback((sessionId: string | null | undefined) => {
-    if (!sessionId) return;
-    draftsRef.current[sessionId] = {
-      prompt: promptRef.current,
-      images: pendingImagesRef.current,
-    };
-  }, []);
-
-  const loadDraft = useCallback((sessionId: string | null | undefined) => {
-    if (!sessionId) {
-      setPrompt("");
-      setPendingImages([]);
-      setComposerCursor(0);
-      return;
-    }
-    const d = draftsRef.current[sessionId];
-    setPrompt(d?.prompt ?? "");
-    setPendingImages(d?.images ?? []);
-    setComposerCursor(d?.prompt?.length ?? 0);
-    setSlashDismissed(false);
-    setSlashIndex(0);
-  }, []);
 
   const focusComposer = useCallback(() => {
     requestAnimationFrame(() => {
@@ -408,50 +410,6 @@ export default function App() {
     [],
   );
 
-  const refreshGit = useCallback(async (cwd: string, path?: string | null) => {
-    if (!cwd) return;
-    setGitLoading(true);
-    setGitError(null);
-    try {
-      const st = await invoke<{
-        isRepo: boolean;
-        files: GitFileStatus[];
-        error?: string | null;
-      }>("git_status", { cwd });
-      setGitIsRepo(st.isRepo);
-      setGitFiles(st.files ?? []);
-      if (st.error) setGitError(st.error);
-      const select =
-        path ??
-        gitSelectedRef.current ??
-        st.files?.[0]?.path ??
-        null;
-      if (select && st.isRepo) {
-        // Keep selection if still present; else first dirty file
-        const stillThere = st.files?.some((f) => f.path === select);
-        const pick = stillThere ? select : st.files?.[0]?.path ?? select;
-        setGitSelected(pick);
-        const d = await invoke<{
-          path: string | null;
-          patch: string;
-          isRepo: boolean;
-          error?: string | null;
-        }>("git_diff", { cwd, path: pick });
-        setGitPatch(d.patch ?? "");
-        if (d.error) setGitError(d.error);
-      } else if (!st.isRepo) {
-        setGitPatch("");
-        setGitSelected(null);
-      } else {
-        setGitPatch("");
-      }
-    } catch (e) {
-      setGitError(String(e));
-    } finally {
-      setGitLoading(false);
-    }
-  }, []);
-
   /** Focus a session tab, persisting composer draft for the previous tab. */
   const selectSession = useCallback(
     (sessionId: string, sessionCwd: string) => {
@@ -480,22 +438,6 @@ export default function App() {
       if (next) selectSession(next.sessionId, next.cwd);
     },
     [selectSession],
-  );
-
-  /** Debounced git refresh after mutating tools (mid-run Diff updates). */
-  const scheduleGitRefresh = useCallback(
-    (sessionId: string) => {
-      const s = sessionsRef.current.find((x) => x.sessionId === sessionId);
-      if (!s?.cwd) return;
-      // Only auto-refresh Diff for the active session's project
-      if (activeId && sessionId !== activeId) return;
-      if (gitRefreshTimer.current) clearTimeout(gitRefreshTimer.current);
-      const cwd = s.cwd;
-      gitRefreshTimer.current = setTimeout(() => {
-        void refreshGit(cwd, gitSelectedRef.current);
-      }, GIT_REFRESH_DEBOUNCE_MS);
-    },
-    [activeId, refreshGit],
   );
 
   const touchActivity = useCallback((sessionId: string) => {
@@ -548,69 +490,6 @@ export default function App() {
     }
   }, []);
 
-  const refreshPins = useCallback(async () => {
-    try {
-      const list = await invoke<SessionPin[]>("list_pins");
-      setPins(list);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const refreshGroups = useCallback(async () => {
-    try {
-      const state = await invoke<SessionGroupsState>("list_session_groups");
-      setSessionGroups({
-        groups: state.groups ?? [],
-        membership: state.membership ?? {},
-        sessionRefs: state.sessionRefs ?? {},
-      });
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const isPinned = useCallback(
-    (sessionId: string, cwd?: string) =>
-      pins.some(
-        (p) =>
-          p.sessionId === sessionId &&
-          (cwd == null || cwd === "" || p.cwd === cwd),
-      ),
-    [pins],
-  );
-
-  const pinSession = useCallback(
-    async (sessionId: string, cwd: string, title?: string | null) => {
-      try {
-        const list = await invoke<SessionPin[]>("pin_session", {
-          sessionId,
-          cwd,
-          title: title || null,
-        });
-        setPins(list);
-      } catch (e) {
-        setError(String(e));
-      }
-    },
-    [],
-  );
-
-  const unpinSession = useCallback(
-    async (sessionId: string, cwd?: string) => {
-      try {
-        const list = await invoke<SessionPin[]>("unpin_session", {
-          sessionId,
-          cwd: cwd || null,
-        });
-        setPins(list);
-      } catch (e) {
-        setError(String(e));
-      }
-    },
-    [],
-  );
-
   /** Custom display name — survives restarts (Desk session-titles.json). */
   const renameSession = useCallback(
     async (sessionId: string, title: string) => {
@@ -620,16 +499,14 @@ export default function App() {
           title,
         });
         const sess = sessionsRef.current.find((s) => s.sessionId === sessionId);
-        const cwd = sess?.cwd ?? "";
+        const sessionCwd = sess?.cwd ?? "";
         const display = resolveSessionTitle(
-          cwd,
+          sessionCwd,
           saved,
           sess?.title,
-          folderName(cwd),
+          folderName(sessionCwd),
         );
-        // Always write the chosen display name into the open tab (and chrome/tabs).
         patchSession(sessionId, (s) => ({ ...s, title: display }));
-        // Keep group-pin resume metadata in sync
         if (sess) {
           try {
             await invoke("touch_session_ref", {
@@ -653,7 +530,6 @@ export default function App() {
 
   /**
    * Pull better titles from pins into open tabs (folder-name → descriptive).
-   * Pins can hold Grok summary / pin snapshot names that tabs never got.
    */
   useEffect(() => {
     if (pins.length === 0 || sessions.length === 0) return;
@@ -673,158 +549,13 @@ export default function App() {
     });
   }, [pins, sessions.length]);
 
-  const reorderPins = useCallback(async (sessionIds: string[]) => {
-    try {
-      const list = await invoke<SessionPin[]>("reorder_pins", { sessionIds });
-      setPins(list);
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
   useEffect(() => {
-    refreshStatus();
-    refreshDisk();
-    refreshPins();
-    refreshGroups();
+    void refreshStatus();
+    void refreshDisk();
+    void refreshPins();
+    void refreshGroups();
     invoke<string>("default_cwd").then(setCwd).catch(() => {});
   }, [refreshStatus, refreshDisk, refreshPins, refreshGroups]);
-
-  const applyGroupsState = (state: SessionGroupsState) => {
-    setSessionGroups({
-      groups: state.groups ?? [],
-      membership: state.membership ?? {},
-      sessionRefs: state.sessionRefs ?? {},
-    });
-  };
-
-  const createGroup = useCallback(
-    async (name: string) => {
-      try {
-        applyGroupsState(
-          await invoke<SessionGroupsState>("create_session_group", { name }),
-        );
-      } catch (e) {
-        setError(String(e));
-      }
-    },
-    [],
-  );
-
-  const renameGroup = useCallback(async (groupId: string, name: string) => {
-    try {
-      applyGroupsState(
-        await invoke<SessionGroupsState>("rename_session_group", {
-          groupId,
-          name,
-        }),
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
-  const deleteGroup = useCallback(async (groupId: string) => {
-    try {
-      applyGroupsState(
-        await invoke<SessionGroupsState>("delete_session_group", { groupId }),
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
-  const setGroupCollapsed = useCallback(
-    async (groupId: string, collapsed: boolean) => {
-      try {
-        applyGroupsState(
-          await invoke<SessionGroupsState>("set_group_collapsed", {
-            groupId,
-            collapsed,
-          }),
-        );
-      } catch (e) {
-        setError(String(e));
-      }
-    },
-    [],
-  );
-
-  const setSessionGroup = useCallback(
-    async (sessionId: string, groupId: string | null) => {
-      try {
-        const sess = sessionsRef.current.find((s) => s.sessionId === sessionId);
-        applyGroupsState(
-          await invoke<SessionGroupsState>("set_session_group", {
-            sessionId,
-            groupId,
-            cwd: sess?.cwd ?? null,
-            title: sess?.title ?? null,
-          }),
-        );
-      } catch (e) {
-        setError(String(e));
-      }
-    },
-    [],
-  );
-
-  const setGroupPinned = useCallback(async (groupId: string, pinned: boolean) => {
-    try {
-      // Ensure every open member has a cwd ref before pinning (resume needs it)
-      if (pinned) {
-        const state = sessionGroups;
-        const members = Object.entries(state.membership)
-          .filter(([, gid]) => gid === groupId)
-          .map(([sid]) => sid);
-        for (const sid of members) {
-          const sess = sessionsRef.current.find((s) => s.sessionId === sid);
-          if (sess) {
-            try {
-              await invoke("touch_session_ref", {
-                sessionId: sid,
-                cwd: sess.cwd,
-                title: sess.title ?? null,
-              });
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-      }
-      applyGroupsState(
-        await invoke<SessionGroupsState>("set_group_pinned", {
-          groupId,
-          pinned,
-        }),
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [sessionGroups]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        "grok-desk.sidebarCollapsed",
-        sidebarCollapsed ? "1" : "0",
-      );
-    } catch {
-      /* private mode */
-    }
-  }, [sidebarCollapsed]);
-
-  const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((v) => !v);
-  }, []);
-
-  const toggleFileTree = useCallback(() => {
-    setFileTreeOpen((v) => {
-      const next = !v;
-      saveFileTreeOpen(next);
-      return next;
-    });
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1526,8 +1257,7 @@ export default function App() {
           return;
         }
         if (fileTreeOpen) {
-          setFileTreeOpen(false);
-          saveFileTreeOpen(false);
+          closeFileTree();
           return;
         }
         if (inspectorTab) {
@@ -1682,7 +1412,7 @@ export default function App() {
       setInfo(null);
       setSessions([]);
       setActiveId(null);
-      draftsRef.current = {};
+      clearAllDrafts();
       loadDraft(null);
       pinsRestoredRef.current = false;
       setTerminalFocused(false);
@@ -2025,7 +1755,7 @@ export default function App() {
 
   const closeSession = (sessionId: string) => {
     const wasActive = activeIdRef.current === sessionId;
-    delete draftsRef.current[sessionId];
+    clearDraft(sessionId);
     delete streamBuf.current[sessionId];
     delete stickBottomRef.current[sessionId];
     inFlightRef.current.delete(sessionId);
@@ -2818,21 +2548,7 @@ export default function App() {
 
   const selectGitFile = async (path: string) => {
     if (!active) return;
-    setGitSelected(path);
-    setGitLoading(true);
-    try {
-      const d = await invoke<{
-        path: string | null;
-        patch: string;
-        error?: string | null;
-      }>("git_diff", { cwd: active.cwd, path });
-      setGitPatch(d.patch ?? "");
-      if (d.error) setGitError(d.error);
-    } catch (e) {
-      setGitError(String(e));
-    } finally {
-      setGitLoading(false);
-    }
+    await selectGitFileAt(active.cwd, path);
   };
 
   // Refresh git when switching sessions
@@ -3295,8 +3011,7 @@ export default function App() {
         headerStatus={headerStatus}
         activeBusy={active?.busy}
         activePermissionCount={active?.permissions.length}
-        info={info}
-        grok={grok}
+        tierLabel={info?.subscriptionTier}
         appVersion={appVersion}
         updateAvailable={!!updateCheck?.updateAvailable && !updateBannerDismissed}
         onShowShortcuts={() => setShowShortcuts(true)}
@@ -3414,8 +3129,7 @@ export default function App() {
                   root={active.cwd}
                   open={fileTreeOpen}
                   onClose={() => {
-                    setFileTreeOpen(false);
-                    saveFileTreeOpen(false);
+                    closeFileTree();
                   }}
                 />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -3700,6 +3414,8 @@ export default function App() {
                   onCheckUpdates={() => void checkForUpdates()}
                   onStartUpdate={() => void startAppUpdate()}
                   onRestartApp={() => void restartApp()}
+                  agentInfo={info}
+                  grokStatus={grok}
                 />
               )}
             </InspectorRail>
