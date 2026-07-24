@@ -49,10 +49,10 @@ export function SessionRow({
         flex width (group select alone was ~4.5rem of “empty” space).
       */}
       <div
-        className={`group relative flex w-full items-start rounded-lg px-1 py-1 transition ${
+        className={`group relative flex w-full items-start overflow-hidden rounded-lg border-l-2 px-1 py-1 transition ${
           selected
-            ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-            : "hover:bg-[var(--bg-hover)]"
+            ? "border-[var(--accent)] bg-[var(--bg-active)]"
+            : "border-transparent hover:bg-[var(--bg-hover)]"
         }`}
       >
         <button
@@ -92,7 +92,7 @@ export function SessionRow({
                 onRename={(next) => onRenameSession(s.sessionId, next)}
               />
             </div>
-            <div className="mono truncate text-[10px] text-[var(--text-faint)]">
+            <div className="mono truncate text-[10px] text-[var(--text-muted)]">
               {folderName(s.cwd)}
               {(() => {
                 const run = countRunningTools(s.tools);

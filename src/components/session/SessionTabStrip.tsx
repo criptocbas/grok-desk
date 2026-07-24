@@ -45,8 +45,8 @@ export function SessionTabStrip({
               title={`${title}\n${s.cwd}\n${st.label}`}
               className={`group flex max-w-[14rem] shrink-0 items-center gap-1.5 border-r border-[var(--border)] px-2.5 py-1.5 text-left ${
                 active
-                  ? "bg-[var(--bg-elevated)] text-[var(--text)]"
-                  : "bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+                  ? "bg-[var(--bg-active)] text-[var(--text)] shadow-[inset_0_-2px_0_0_var(--accent)]"
+                  : "bg-transparent text-[var(--text-muted)] shadow-[inset_0_-2px_0_0_transparent] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
               } ${st.alert && !active ? "bg-[var(--bg-danger-subtle)]" : ""}`}
               onClick={() => onSelect(s.sessionId, s.cwd)}
               onKeyDown={(e) => {

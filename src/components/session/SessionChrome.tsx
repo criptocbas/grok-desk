@@ -138,7 +138,7 @@ export function SessionChrome({
             />
           </div>
           <div
-            className="mono truncate text-[10px] text-[var(--text-faint)]"
+            className="mono truncate text-[10px] text-[var(--text-muted)]"
             title={session.cwd}
           >
             {session.cwd}

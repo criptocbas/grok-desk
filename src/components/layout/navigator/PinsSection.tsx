@@ -102,15 +102,17 @@ export function PinsSection({
                       }
                     >
                       <div
-                        className={`group flex w-full items-start gap-1 rounded-lg px-1.5 py-1.5 ${
+                        className={`group flex w-full items-start gap-1 overflow-hidden rounded-lg border-l-2 px-1.5 py-1.5 ${
                           selected
-                            ? "bg-[var(--bg-active)] ring-1 ring-[var(--accent)]/35"
-                            : "hover:bg-[var(--bg-hover)]"
+                            ? "border-[var(--accent)] bg-[var(--bg-active)]"
+                            : section.groupId
+                              ? "border-[var(--accent)]/25 hover:bg-[var(--bg-hover)]"
+                              : "border-transparent hover:bg-[var(--bg-hover)]"
                         } ${p.missing ? "opacity-60" : ""} ${
                           onReorderPins
                             ? "cursor-grab active:cursor-grabbing"
                             : ""
-                        } ${section.groupId ? "ml-0.5 border-l-2 border-[var(--accent)]/25 pl-1" : ""}`}
+                        }`}
                       >
                         <button
                           type="button"
@@ -154,7 +156,7 @@ export function PinsSection({
                                 </span>
                               ) : null}
                             </div>
-                            <div className="mono truncate text-[10px] text-[var(--text-faint)]">
+                            <div className="mono truncate text-[10px] text-[var(--text-muted)]">
                               {folderName(p.cwd)} · {shortId(p.sessionId)}
                             </div>
                           </div>

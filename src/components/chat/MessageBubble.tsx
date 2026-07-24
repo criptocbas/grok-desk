@@ -117,7 +117,7 @@ export function MessageBubble({ item }: { item: ChatItem }) {
     );
   }
   return (
-    <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-[var(--border)] bg-[var(--bg-panel)] px-3.5 py-2.5 text-[var(--text)] shadow-[0_1px_0_rgba(0,0,0,0.12)]">
+    <div className="max-w-[92%] rounded-[var(--radius-lg)] rounded-bl-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-panel)] px-3.5 py-2.5 text-[var(--text)]">
       <RichText text={item.text} />
     </div>
   );

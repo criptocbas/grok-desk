@@ -11,7 +11,7 @@ export function RichText({ text, className = "" }: Props) {
   const blocks = splitBlocks(text);
   return (
     <div
-      className={`space-y-2 text-sm leading-relaxed text-[var(--text)] ${className}`}
+      className={`space-y-2.5 text-sm leading-relaxed text-[var(--text)] ${className}`}
     >
       {blocks.map((b, i) => (
         <Block key={i} block={b} />
@@ -55,9 +55,9 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   }, [body]);
 
   return (
-    <div className="group/code relative my-1 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg)]">
+    <div className="group/code relative my-1.5 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)]">
       <div className="flex items-center justify-between gap-2 border-b border-[var(--border)]/60 px-2.5 py-1">
-        <span className="mono truncate text-[10px] text-[var(--text-faint)]">
+        <span className="mono truncate text-[10px] text-[var(--text-muted)]">
           {lang || "code"}
         </span>
         <button
@@ -73,7 +73,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
               : "Copy"}
         </button>
       </div>
-      <pre className="mono max-h-80 overflow-auto px-3 py-2 text-[12px] leading-relaxed text-[var(--tool)]">
+      <pre className="mono max-h-80 overflow-auto px-2.5 py-2 text-[12px] leading-relaxed text-[var(--tool)]">
         {body}
       </pre>
     </div>
@@ -115,23 +115,24 @@ function Block({ block }: { block: Block }) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // blank
+    // blank — real section breather (still dense)
     if (!line.trim()) {
-      nodes.push(<div key={i} className="h-1" />);
+      nodes.push(<div key={i} className="h-2" aria-hidden />);
       i++;
       continue;
     }
 
     // headings — use theme text token (never hardcode white; breaks light mode)
+    // H1/H2 get a hairline so long reports scan as sections
     const h = line.match(/^(#{1,4})\s+(.*)$/);
     if (h) {
       const level = h[1].length;
       const cls =
         level === 1
-          ? "mt-3 text-base font-semibold text-[var(--text)]"
+          ? "mt-3.5 border-b border-[var(--border)] pb-1 text-base font-semibold text-[var(--text)] first:mt-0"
           : level === 2
-            ? "mt-2.5 text-[15px] font-semibold text-[var(--text)]"
-            : "mt-2 text-[13px] font-semibold text-[var(--text)]";
+            ? "mt-3 border-b border-[var(--border)] pb-1 text-[15px] font-semibold text-[var(--text)] first:mt-0"
+            : "mt-2.5 text-[13px] font-semibold text-[var(--text)] first:mt-0";
       nodes.push(
         <div key={i} className={cls}>
           <Inline text={h[2]} />
@@ -149,7 +150,7 @@ function Block({ block }: { block: Block }) {
         i++;
       }
       nodes.push(
-        <ul key={`ul-${i}`} className="my-1 list-disc space-y-1 pl-5">
+        <ul key={`ul-${i}`} className="my-1.5 list-disc space-y-1 pl-5">
           {items.map((it, j) => (
             <li key={j}>
               <Inline text={it} />
@@ -168,7 +169,7 @@ function Block({ block }: { block: Block }) {
         i++;
       }
       nodes.push(
-        <ol key={`ol-${i}`} className="my-1 list-decimal space-y-1 pl-5">
+        <ol key={`ol-${i}`} className="my-1.5 list-decimal space-y-1 pl-5">
           {items.map((it, j) => (
             <li key={j}>
               <Inline text={it} />
