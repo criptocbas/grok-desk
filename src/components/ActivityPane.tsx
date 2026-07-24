@@ -29,9 +29,15 @@ type Props = {
   busy: boolean;
   /** Fill parent (utility rail) — always expanded, no collapsible chrome. */
   embedded?: boolean;
+  /**
+   * Tier 2b: when user opens a subagent detail without outputBody,
+   * load capped disk output (parent session scope).
+   */
+  onLoadSubagentOutput?: (subagentId: string) => void | Promise<void>;
 };
 
-const RECENT_LIMIT = 20;
+/** Keep the rail scannable on Heavy runs; expand via “Show all recent”. */
+const RECENT_LIMIT = 8;
 
 export function ActivityPane({
   tools,
@@ -39,6 +45,7 @@ export function ActivityPane({
   subagents = [],
   busy,
   embedded = false,
+  onLoadSubagentOutput,
 }: Props) {
   const runningCount = countRunningTools(tools);
   const bgRunning = countRunningBackground(backgroundTasks);
@@ -51,6 +58,7 @@ export function ActivityPane({
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [loadingOutputId, setLoadingOutputId] = useState<string | null>(null);
 
   useEffect(() => {
     if (busy || live > 0) setOpen(true);
@@ -97,6 +105,28 @@ export function ActivityPane({
     selectedSubId != null
       ? (subagents.find((s) => s.subagentId === selectedSubId) ?? null)
       : null;
+
+  // Lazy load capped output.json when detail opens without a body
+  useEffect(() => {
+    if (!selectedSub || !onLoadSubagentOutput) return;
+    if (selectedSub.outputBody || selectedSub.outputSummary) return;
+    if (isSubagentRunning(selectedSub.status)) return;
+    const id = selectedSub.subagentId;
+    let cancelled = false;
+    setLoadingOutputId(id);
+    void Promise.resolve(onLoadSubagentOutput(id)).finally(() => {
+      if (!cancelled) setLoadingOutputId((cur) => (cur === id ? null : cur));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedSub?.subagentId,
+    selectedSub?.outputBody,
+    selectedSub?.outputSummary,
+    selectedSub?.status,
+    onLoadSubagentOutput,
+  ]);
 
   const selectSub = (id: string) => {
     setSelectedSubId((cur) => (cur === id ? null : id));
@@ -326,6 +356,7 @@ export function ActivityPane({
             sub={selectedSub}
             now={now}
             onClose={() => setSelectedSubId(null)}
+            loadingOutput={loadingOutputId === selectedSub.subagentId}
           />
         )}
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
@@ -374,6 +405,7 @@ export function ActivityPane({
               now={now}
               onClose={() => setSelectedSubId(null)}
               compact
+              loadingOutput={loadingOutputId === selectedSub.subagentId}
             />
           )}
           <div className="max-h-64 overflow-y-auto px-2 pb-2">
@@ -500,11 +532,13 @@ function SubagentDetail({
   now,
   onClose,
   compact = false,
+  loadingOutput = false,
 }: {
   sub: SubagentItem;
   now: number;
   onClose: () => void;
   compact?: boolean;
+  loadingOutput?: boolean;
 }) {
   const [copied, setCopied] = useState<"body" | "id" | null>(null);
   const running = isSubagentRunning(sub.status);
@@ -610,7 +644,12 @@ function SubagentDetail({
           Still running… result appears here when the child finishes.
         </p>
       )}
-      {!running && !body && (
+      {loadingOutput && !body && (
+        <p className="text-[11px] leading-relaxed text-[var(--text-faint)]">
+          Loading result from disk…
+        </p>
+      )}
+      {!running && !body && !loadingOutput && (
         <p className="text-[11px] leading-relaxed text-[var(--text-faint)]">
           {failed
             ? "No output captured for this failed subagent."

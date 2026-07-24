@@ -863,6 +863,116 @@ export function completeSubagentsFromWaitTool(
   });
 }
 
+/**
+ * Disk meta from `list_session_subagents` (camelCase from Rust).
+ * Status "running" on disk after app restart → "unknown" so watching strip stays honest.
+ */
+export type DiskSubagentMeta = {
+  subagentId: string;
+  childSessionId?: string | null;
+  parentSessionId?: string | null;
+  subagentType?: string | null;
+  description?: string | null;
+  status?: string | null;
+  model?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  toolCalls?: number | null;
+  turns?: number | null;
+  contextSource?: string | null;
+  hasOutput?: boolean;
+};
+
+function parseIsoMs(iso: string | null | undefined): number | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : undefined;
+}
+
+/** Map disk meta → SubagentItem. Disk `running` becomes `unknown` (not live). */
+export function subagentFromDiskMeta(
+  meta: DiskSubagentMeta,
+  opts?: { treatRunningAsUnknown?: boolean },
+): SubagentItem | null {
+  const subagentId = meta.subagentId?.trim();
+  if (!subagentId) return null;
+  const treatRunningAsUnknown = opts?.treatRunningAsUnknown !== false;
+  let status = normalizeSubagentStatus(meta.status);
+  if (treatRunningAsUnknown && status === "running") {
+    status = "unknown";
+  }
+  const startedAt = parseIsoMs(meta.startedAt ?? undefined);
+  const endedAt = parseIsoMs(meta.completedAt ?? undefined);
+  const description = truncate(
+    (meta.description && meta.description.trim()) || "Subagent",
+    DETAIL_MAX,
+  );
+  return {
+    subagentId,
+    childSessionId: meta.childSessionId ?? subagentId,
+    parentSessionId: meta.parentSessionId ?? undefined,
+    description,
+    subagentType: meta.subagentType ?? undefined,
+    model: meta.model ?? undefined,
+    status,
+    contextSource: meta.contextSource ?? undefined,
+    startedAt,
+    endedAt,
+    durationMs:
+      meta.durationMs != null
+        ? Number(meta.durationMs)
+        : startedAt != null && endedAt != null
+          ? Math.max(0, endedAt - startedAt)
+          : undefined,
+    toolCalls: meta.toolCalls != null ? Number(meta.toolCalls) : undefined,
+    turns: meta.turns != null ? Number(meta.turns) : undefined,
+  };
+}
+
+/**
+ * Merge disk hydrate into live list. Live rows win on id conflict.
+ * Disk-only rows append; result capped to MAX_SUBAGENTS (newest by startedAt).
+ */
+export function mergeHydratedSubagents(
+  live: SubagentItem[],
+  disk: SubagentItem[],
+): SubagentItem[] {
+  const byId = new Map<string, SubagentItem>();
+  for (const d of disk) {
+    if (!d.subagentId) continue;
+    byId.set(d.subagentId, d);
+  }
+  for (const l of live) {
+    if (!l.subagentId) continue;
+    const prev = byId.get(l.subagentId);
+    if (!prev) {
+      byId.set(l.subagentId, l);
+      continue;
+    }
+    // Live wins; fill gaps from disk
+    byId.set(l.subagentId, {
+      ...prev,
+      ...l,
+      description: isWeakSubagentLabel(l.description)
+        ? prev.description
+        : l.description,
+      outputSummary: l.outputSummary ?? prev.outputSummary,
+      outputBody: l.outputBody ?? prev.outputBody,
+      startedAt: l.startedAt ?? prev.startedAt,
+      endedAt: l.endedAt ?? prev.endedAt,
+      durationMs: l.durationMs ?? prev.durationMs,
+      toolCalls: l.toolCalls ?? prev.toolCalls,
+      turns: l.turns ?? prev.turns,
+      model: l.model ?? prev.model,
+      subagentType: l.subagentType ?? prev.subagentType,
+    });
+  }
+  const out = Array.from(byId.values());
+  out.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  return out.length > MAX_SUBAGENTS ? out.slice(0, MAX_SUBAGENTS) : out;
+}
+
 /** Prefer real subagent ids over pending:toolCallId placeholders with same description. */
 export function reconcileSubagentList(
   list: SubagentItem[],

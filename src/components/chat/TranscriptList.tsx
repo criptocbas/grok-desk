@@ -8,6 +8,8 @@ type Props = {
   onRetryUser?: (text: string) => void;
   /** Responsive max-width class (e.g. max-w-3xl / max-w-6xl). */
   contentMaxClass?: string;
+  /** When true, keep the latest live thought/tool group expanded. */
+  busy?: boolean;
 };
 
 type Segment =
@@ -17,6 +19,11 @@ type Segment =
       id: string;
       tools: ChatItem[];
       subagents: ChatItem[];
+    }
+  | {
+      kind: "thought-group";
+      id: string;
+      thoughts: ChatItem[];
     };
 
 function isNoiseRole(role: ChatItem["role"]): boolean {
@@ -38,12 +45,36 @@ function isFailed(item: ChatItem): boolean {
   return st.includes("fail") || st.includes("error");
 }
 
-/** Collapse consecutive tool/subagent rows into a single chip group. */
+/**
+ * Collapse consecutive tool/subagent rows into a chip group, and consecutive
+ * thoughts into a thought stack (Heavy calm). Pure — safe to unit-test.
+ */
 export function groupTranscriptItems(items: ChatItem[]): Segment[] {
   const out: Segment[] = [];
   let i = 0;
   while (i < items.length) {
     const item = items[i];
+
+    // Consecutive thoughts → one stack (single thought stays a normal item)
+    if (item.role === "thought") {
+      const thoughts: ChatItem[] = [];
+      const start = i;
+      while (i < items.length && items[i].role === "thought") {
+        thoughts.push(items[i]);
+        i += 1;
+      }
+      if (thoughts.length === 1) {
+        out.push({ kind: "item", item: thoughts[0] });
+      } else {
+        out.push({
+          kind: "thought-group",
+          id: `thoughts-${start}-${items[start]?.id ?? start}`,
+          thoughts,
+        });
+      }
+      continue;
+    }
+
     if (!isNoiseRole(item.role)) {
       out.push({ kind: "item", item });
       i += 1;
@@ -167,6 +198,52 @@ function ToolGroupChip({
   );
 }
 
+function ThoughtGroupChip({
+  thoughts,
+  defaultOpen,
+}: {
+  thoughts: ChatItem[];
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
+
+  const chars = thoughts.reduce((n, t) => n + (t.text?.length ?? 0), 0);
+  const charLabel =
+    chars > 1000 ? `${Math.round(chars / 1000)}k chars` : `${chars} chars`;
+
+  return (
+    <div className="rounded-xl border border-[var(--thought)]/18 bg-[var(--thought)]/5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-[11px] text-[var(--thought)] hover:text-[var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        aria-expanded={open}
+      >
+        <span className="mono shrink-0 rounded bg-[var(--thought)]/12 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide">
+          think
+        </span>
+        <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-muted)]">
+          {thoughts.length} thoughts
+        </span>
+        <span className="shrink-0 text-[var(--text-faint)]">· {charLabel}</span>
+        <span className="shrink-0 text-[var(--text-faint)]" aria-hidden>
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-1.5 border-t border-[var(--thought)]/15 px-3 py-2">
+          {thoughts.map((item) => (
+            <MessageBubble key={item.id} item={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
@@ -251,20 +328,42 @@ export function TranscriptList({
   onOpenActivity,
   onRetryUser,
   contentMaxClass = "max-w-3xl",
+  busy = false,
 }: Props) {
   const segments = useMemo(() => groupTranscriptItems(items), [items]);
+
+  // Index of the last thought or thought-group (live thinking while busy).
+  const lastThoughtSegIdx = useMemo(() => {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const s = segments[i];
+      if (s.kind === "thought-group") return i;
+      if (s.kind === "item" && s.item.role === "thought") return i;
+    }
+    return -1;
+  }, [segments]);
 
   return (
     <div
       className={`mx-auto w-full space-y-3 transition-[max-width] duration-200 ease-out ${contentMaxClass}`}
     >
-      {segments.map((seg) => {
+      {segments.map((seg, segIdx) => {
         if (seg.kind === "item") {
           return (
             <MessageWithActions
               key={seg.item.id}
               item={seg.item}
               onRetryUser={onRetryUser}
+            />
+          );
+        }
+        if (seg.kind === "thought-group") {
+          // Expand the latest thought stack while the turn is busy; historic stay collapsed.
+          const isLatest = segIdx === lastThoughtSegIdx;
+          return (
+            <ThoughtGroupChip
+              key={seg.id}
+              thoughts={seg.thoughts}
+              defaultOpen={busy && isLatest}
             />
           );
         }

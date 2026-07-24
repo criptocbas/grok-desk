@@ -11,7 +11,7 @@ mod session_titles;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use acp::{AgentInfo, DiskSession, GrokStatus, SessionInfo, SharedAgent};
+use acp::{AgentInfo, DiskSession, DiskSubagentMeta, GrokStatus, SessionInfo, SharedAgent};
 use git::{GitDiffResult, GitStatusResult};
 use parking_lot::Mutex;
 use pins::SessionPin;
@@ -234,6 +234,28 @@ fn list_disk_sessions(limit: Option<usize>) -> Result<Vec<DiskSession>, String> 
 #[tauri::command]
 fn read_plan_doc(session_id: String, cwd: String) -> Option<String> {
     SharedAgent::read_plan_doc(&session_id, &cwd)
+}
+
+/// List child agents from disk under a parent session (Tier 2b hydrate). Empty if none.
+#[tauri::command]
+fn list_session_subagents(session_id: String, cwd: String) -> Vec<DiskSubagentMeta> {
+    SharedAgent::list_session_subagents(&session_id, &cwd)
+}
+
+/// Capped subagent finish body from `output.json` (lazy Tier 2a/2b detail).
+#[tauri::command]
+fn read_subagent_output(
+    session_id: String,
+    cwd: String,
+    subagent_id: String,
+    max_chars: Option<usize>,
+) -> Option<String> {
+    SharedAgent::read_subagent_output(
+        &session_id,
+        &cwd,
+        &subagent_id,
+        max_chars.unwrap_or(6_000),
+    )
 }
 
 #[tauri::command]
@@ -533,6 +555,8 @@ pub fn run() {
             plan_approval_respond,
             list_disk_sessions,
             read_plan_doc,
+            list_session_subagents,
+            read_subagent_output,
             git_status,
             git_diff,
             default_cwd,

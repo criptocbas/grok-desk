@@ -1,0 +1,17 @@
+{
+  "subagent_id": "019f0000-subagent-0000-0000-000000000001",
+  "parent_session_id": "019f0000-parent-0000-0000-000000000001",
+  "child_session_id": "019f0000-subagent-0000-0000-000000000001",
+  "subagent_type": "explore",
+  "description": "Explore app architecture",
+  "prompt": "[redacted for fixture]",
+  "status": "completed",
+  "started_at": "2026-07-24T05:20:56.070639265Z",
+  "completed_at": "2026-07-24T05:22:37.019286300Z",
+  "duration_ms": 100948,
+  "tool_calls": 63,
+  "turns": 1,
+  "effective_context_source": "new",
+  "child_cwd": "/tmp/example-project",
+  "effective_model_id": "grok-4.5"
+}

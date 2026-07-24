@@ -1,0 +1,11 @@
+{
+  "sessionUpdate": "subagent_spawned",
+  "subagent_id": "019f0000-subagent-0000-0000-000000000001",
+  "child_session_id": "019f0000-subagent-0000-0000-000000000001",
+  "parent_session_id": "019f0000-parent-0000-0000-000000000001",
+  "subagent_type": "explore",
+  "description": "Explore app architecture",
+  "model": "grok-4.5",
+  "resumed_from": null,
+  "effective_context_source": "new"
+}

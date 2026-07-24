@@ -50,9 +50,11 @@ Keep it simple yet extremely functional. No new surfaces until the default path 
 
 - [x] Quieting: slim titlebar (About in Settings), collapsed session controls, de-duped Plan/Diff chips, composer hints only when empty
 - [x] Re-thin (partial): `useGitDiff`, `useComposerDrafts`, `usePinsAndGroups`, `useLayoutChrome`
-- [ ] Re-thin (remaining): `useSessionStore`, `useAcpBridge`, `useSessionActions`
-- [ ] Heavy-run transcript / activity hierarchy
-- [ ] Smoke checklist + docs freeze
+- [x] Re-thin: `useSessionStore` (session state + stream buffers + tab focus)
+- [ ] Re-thin (remaining): `useSessionActions`, `useAcpBridge` (highest risk — extract last)
+- [x] Heavy-run transcript hierarchy (tool groups + consecutive thought stacks)
+- [x] Smoke checklist: `docs/SMOKE.md` + `docs/fixtures/`
+- [ ] Docs freeze after remaining re-thin
 
 ## Phase 3 — Workspace ← **nearly complete**
 
@@ -77,7 +79,7 @@ Priority order is flexible; pick with the user:
 - [x] Richer tool / subagent / background-task presentation (Activity pane + task_* events)
 - [x] First-class subagents: `subagent_spawned` / `subagent_finished`, Activity section, transcript cards, watching strip (Tier 1)
 - [x] Subagent Tier 2a: click row → read-only detail panel (capped output + copy; no full child transcript)
-- [ ] Subagent Tier 2b: disk hydrate on resume + optional full child transcript
+- [x] Subagent Tier 2b lite: disk hydrate on resume (`list_session_subagents` + merge; lazy `read_subagent_output`); full child transcript still deferred
 - [x] Desktop install (user-local `.desktop` for Super+Space) + in-app update check / rebuild
 
 ## Phase 4 — Ship loop

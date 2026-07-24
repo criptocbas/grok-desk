@@ -1,0 +1,18 @@
+{
+  "comment": "Synthetic ChatItem slice for groupTranscriptItems mental replay — consecutive tools + one subagent.",
+  "items": [
+    { "id": "u1", "role": "user", "text": "Explore the codebase in parallel." },
+    { "id": "t1", "role": "tool", "text": "read_file", "meta": "src/App.tsx", "status": "completed" },
+    { "id": "t2", "role": "tool", "text": "grep", "meta": "useSession", "status": "completed" },
+    {
+      "id": "subagent-019f0000-subagent-0000-0000-000000000001",
+      "role": "subagent",
+      "text": "Explore app architecture",
+      "meta": "completed · 1m41s · 63 tools",
+      "status": "completed",
+      "subagentId": "019f0000-subagent-0000-0000-000000000001"
+    },
+    { "id": "t3", "role": "tool", "text": "write", "meta": "notes.md", "status": "completed" },
+    { "id": "a1", "role": "assistant", "text": "Done — three explorations merged." }
+  ]
+}

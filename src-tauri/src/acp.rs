@@ -121,6 +121,39 @@ pub struct DiskSession {
     pub num_chat_messages: Option<u64>,
 }
 
+/// Child agent row from `~/.grok/sessions/.../subagents/*/meta.json` (Tier 2b hydrate).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskSubagentMeta {
+    pub subagent_id: String,
+    #[serde(default)]
+    pub child_session_id: Option<String>,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    #[serde(default)]
+    pub subagent_type: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub tool_calls: Option<u64>,
+    #[serde(default)]
+    pub turns: Option<u64>,
+    #[serde(default)]
+    pub context_source: Option<String>,
+    #[serde(default)]
+    pub has_output: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionOption {
@@ -630,6 +663,169 @@ impl SharedAgent {
         None
     }
 
+    /// List child agents under a parent session's disk folder (meta only).
+    /// Missing dir → empty list (never fails resume).
+    pub fn list_session_subagents(session_id: &str, cwd: &str) -> Vec<DiskSubagentMeta> {
+        let Some(home) = dirs_home() else {
+            return vec![];
+        };
+        if session_id.trim().is_empty() || cwd.trim().is_empty() {
+            return vec![];
+        }
+        let encoded = urlencoding_path(cwd);
+        let sub_root = Path::new(&home)
+            .join(".grok")
+            .join("sessions")
+            .join(&encoded)
+            .join(session_id)
+            .join("subagents");
+        if !sub_root.is_dir() {
+            return vec![];
+        }
+        let mut out: Vec<DiskSubagentMeta> = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&sub_root) else {
+            return vec![];
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let meta_path = path.join("meta.json");
+            if !meta_path.is_file() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&meta_path) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            let folder_id = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let subagent_id = v
+                .get("subagent_id")
+                .or_else(|| v.get("subagentId"))
+                .and_then(|x| x.as_str())
+                .unwrap_or(&folder_id)
+                .to_string();
+            if subagent_id.is_empty() {
+                continue;
+            }
+            let has_output = path.join("output.json").is_file();
+            out.push(DiskSubagentMeta {
+                subagent_id,
+                child_session_id: json_str(&v, &["child_session_id", "childSessionId"]),
+                parent_session_id: json_str(&v, &["parent_session_id", "parentSessionId"]),
+                subagent_type: json_str(&v, &["subagent_type", "subagentType"]),
+                description: json_str(&v, &["description"]),
+                status: json_str(&v, &["status"]),
+                model: json_str(&v, &["effective_model_id", "effectiveModelId", "model"]),
+                started_at: json_str(&v, &["started_at", "startedAt"]),
+                completed_at: json_str(&v, &["completed_at", "completedAt"]),
+                duration_ms: json_u64(&v, &["duration_ms", "durationMs"]),
+                tool_calls: json_u64(&v, &["tool_calls", "toolCalls"]),
+                turns: json_u64(&v, &["turns"]),
+                context_source: json_str(
+                    &v,
+                    &["effective_context_source", "effectiveContextSource", "context_source"],
+                ),
+                has_output,
+            });
+        }
+        // Newest first (started_at / completed_at ISO strings sort lexicographically)
+        out.sort_by(|a, b| {
+            let ka = a
+                .completed_at
+                .as_deref()
+                .or(a.started_at.as_deref())
+                .unwrap_or("");
+            let kb = b
+                .completed_at
+                .as_deref()
+                .or(b.started_at.as_deref())
+                .unwrap_or("");
+            kb.cmp(ka)
+        });
+        // Cap — UI also caps; keep IO bounded
+        if out.len() > 40 {
+            out.truncate(40);
+        }
+        out
+    }
+
+    /// Read capped finish text from `subagents/<id>/output.json` (Tier 2a/2b detail).
+    /// Returns None if missing; never loads full child chat_history.
+    pub fn read_subagent_output(
+        session_id: &str,
+        cwd: &str,
+        subagent_id: &str,
+        max_chars: usize,
+    ) -> Option<String> {
+        let home = dirs_home()?;
+        if session_id.trim().is_empty()
+            || cwd.trim().is_empty()
+            || subagent_id.trim().is_empty()
+        {
+            return None;
+        }
+        // Prevent path traversal
+        if subagent_id.contains('/') || subagent_id.contains('\\') || subagent_id.contains("..") {
+            return None;
+        }
+        let encoded = urlencoding_path(cwd);
+        let path = Path::new(&home)
+            .join(".grok")
+            .join("sessions")
+            .join(&encoded)
+            .join(session_id)
+            .join("subagents")
+            .join(subagent_id)
+            .join("output.json");
+        if !path.is_file() {
+            return None;
+        }
+        // Bound read size (UTF-8 chars ≈ bytes for ASCII-heavy logs)
+        let max_bytes = max_chars.saturating_mul(4).min(256 * 1024);
+        let Ok(file) = std::fs::File::open(&path) else {
+            return None;
+        };
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let mut limited = file.take(max_bytes as u64);
+        if limited.read_to_end(&mut buf).is_err() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&buf);
+        // Prefer {"output": "..."} field; fall back to raw text
+        let body = if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            v.get("output")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    // Sometimes nested
+                    v.pointer("/result/output")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| text.to_string())
+        } else {
+            text.to_string()
+        };
+        let mut out = body;
+        if out.chars().count() > max_chars {
+            out = out.chars().take(max_chars).collect::<String>() + "…";
+        }
+        if out.trim().is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
     /// List recent sessions from ~/.grok/sessions (newest first).
     pub fn list_disk_sessions(limit: usize) -> Result<Vec<DiskSession>> {
         let home = dirs_home().ok_or_else(|| AcpError::Msg("HOME not set".into()))?;
@@ -947,6 +1143,32 @@ fn folder_title(cwd: &str) -> String {
 /// Match Grok's session dir encoding (`/` → `%2F`).
 fn urlencoding_path(cwd: &str) -> String {
     cwd.replace('%', "%25").replace('/', "%2F")
+}
+
+fn json_str(v: &Value, keys: &[&str]) -> Option<String> {
+    for k in keys {
+        if let Some(s) = v.get(*k).and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+fn json_u64(v: &Value, keys: &[&str]) -> Option<u64> {
+    for k in keys {
+        if let Some(n) = v.get(*k).and_then(|x| x.as_u64()) {
+            return Some(n);
+        }
+        if let Some(n) = v.get(*k).and_then(|x| x.as_i64()).filter(|n| *n >= 0) {
+            return Some(n as u64);
+        }
+        if let Some(s) = v.get(*k).and_then(|x| x.as_str()) {
+            if let Ok(n) = s.parse::<u64>() {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// Apply optional 1-based `line` start and `limit` line count (ACP fs/read_text_file).

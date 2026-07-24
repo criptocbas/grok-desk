@@ -36,6 +36,7 @@ Grok Desk is a **desktop shell** around the official Grok Build agent. It does n
 - **Session updates** are accepted as both ACP `session/update` and Grok `_x.ai/session/update` (subagent lifecycle uses the extension method).
 - **Watching strip** appears above the composer when subagents or background tasks still run (including after the parent turn ends).
 - **Subagent detail (Tier 2a):** click a subagent in Activity → read-only panel with status, meta, and capped `outputBody` (from `subagent_finished`); no child `session/load`.
+- **Subagent hydrate (Tier 2b lite):** on `session/load` resume, Desk scans `~/.grok/sessions/<enc-cwd>/<sessionId>/subagents/*/meta.json` via `list_session_subagents` and merges into Activity (live ACP rows win). Disk `running` maps to `unknown` so the watching strip does not stick. Detail may lazy-load capped `output.json` via `read_subagent_output`. Never loads child `chat_history` into the parent.
 - **Pinned sessions** are Desk UI bookmarks (not Grok session storage). Content still resumes via `session/load` from `~/.grok/sessions`.
 
 ### Client capabilities (tools)
@@ -84,6 +85,8 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `session_cancel` | `session/cancel` (sessionId) |
 | `session_set_model` | `session/set_model` (+ optional reasoning effort) |
 | `list_disk_sessions` | Scan `~/.grok/sessions/**/summary.json` |
+| `list_session_subagents` | Scan parent `subagents/*/meta.json` for Activity hydrate |
+| `read_subagent_output` | Capped `output.json` text for subagent detail (lazy) |
 | `permission_respond` | Answer permission request |
 | `plan_approval_respond` | Answer `exit_plan_mode` (approved/cancelled/abandoned) |
 | `read_plan_doc` | Load session `plan.md` if present |
@@ -96,11 +99,28 @@ mode that wants client-side FS (e.g. unsaved editor buffers).
 | `set_session_title` / `get_session_title` | Custom session names (`~/.config/grok-desk/session-titles.json`) |
 | `list_session_groups` / create / rename / delete / set membership | Session folders (`~/.config/grok-desk/session-groups.json`) |
 
+## Frontend hooks (orchestration)
+
+Partial re-thin of `App.tsx` — pure presentation stays in components; ACP reliability stays in listeners until `useAcpBridge` lands.
+
+| Hook | Owns |
+|------|------|
+| `useComposerDrafts` | Per-tab prompt/image drafts |
+| `usePinsAndGroups` | Pins + session folders |
+| `useLayoutChrome` | Rails, terminal, palette flags |
+| `useGitDiff` | Diff pane status/patch + debounced refresh |
+| `useSessionStore` | `sessions` / `activeId`, `patchSession`, stream buffers, tab focus, stall/in-flight refs |
+
+Still in `App` (planned extract): session lifecycle + prompt/permission/plan actions; ACP `listen` effect.
+
+Manual regression: [`docs/SMOKE.md`](./docs/SMOKE.md).
+
 ## UI reliability (frontend)
 
 | Mechanism | Why |
 |-----------|-----|
 | Thought / transcript caps | Prevent webview OOM on long Heavy runs |
+| Transcript grouping | Consecutive tools/subagents + thought stacks collapse for Heavy calm |
 | Debounced git refresh after mutating tools | Diff stays live mid-turn |
 | Stall banner (~90s no ACP traffic) | Recover from “looks frozen” without waiting for RPC end |
 | Timeout messaging | If wait ends, remind user agent may still have written files |

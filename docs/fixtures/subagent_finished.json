@@ -1,0 +1,10 @@
+{
+  "sessionUpdate": "subagent_finished",
+  "subagent_id": "019f0000-subagent-0000-0000-000000000001",
+  "status": "completed",
+  "duration_ms": 100948,
+  "tool_calls": 63,
+  "turns": 1,
+  "tokens_used": 49092,
+  "output": "Done — architecture map summarized in final message."
+}

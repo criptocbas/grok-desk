@@ -77,6 +77,7 @@ src-tauri/src/lib.rs             # Tauri commands
 |------|---------|
 | `ROADMAP.md` | What's done vs next phase |
 | `ARCHITECTURE.md` | Process model, events, commands, UI layout |
+| `docs/SMOKE.md` | Manual regression checklist after App/hooks/ACP changes |
 | `src/DESIGN.md` | Visual system (tokens, density, what not to do) |
 | `README.md` | User-facing features + quick start |
 | `docs/solana-workhorse/` | Solana as agent-first packaging (not Desk domain UI) |

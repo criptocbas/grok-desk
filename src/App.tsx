@@ -24,6 +24,7 @@ import type {
   ReviewComment,
   SessionInfo,
   SessionPin,
+  SubagentItem,
   GroupResumeTarget,
   UpdateCheckResult,
   UpdatePhase,
@@ -52,11 +53,16 @@ import {
   parseTaskCompleted,
   completeSubagentsFromWaitTool,
   extractSpawnDescription,
+  mergeHydratedSubagents,
   reconcileSubagentList,
   subagentDisplayTitle,
+  subagentFromDiskMeta,
   subagentFromSpawnTool,
+  type DiskSubagentMeta,
   upsertBackgroundTask,
+  upsertSubagent,
   upsertToolCall,
+  OUTPUT_BODY_MAX,
 } from "./activity";
 import {
   DEFAULT_EFFORTS,
@@ -68,7 +74,6 @@ import {
 import {
   MAX_ASSISTANT_CHARS,
   MAX_THOUGHT_CHARS,
-  MAX_TRANSCRIPT_ITEMS,
   STALL_MS,
 } from "./lib/caps";
 import { extractText, folderName, shortId, uid } from "./lib/format";
@@ -106,14 +111,13 @@ import { useGitDiff } from "./hooks/useGitDiff";
 import { useComposerDrafts } from "./hooks/useComposerDrafts";
 import { usePinsAndGroups } from "./hooks/usePinsAndGroups";
 import { useLayoutChrome } from "./hooks/useLayoutChrome";
+import { useSessionStore } from "./hooks/useSessionStore";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 export default function App() {
   const [grok, setGrok] = useState<GrokStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [info, setInfo] = useState<AgentInfo | null>(null);
-  const [sessions, setSessions] = useState<DeskSession[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,10 +136,8 @@ export default function App() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   /** Avoid stale closures when answering plan approval reverse-requests. */
   const planApprovalRef = useRef<Record<string, PlanApprovalRequest>>({});
-  const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
-  const activeIdRef = useRef(activeId);
-  activeIdRef.current = activeId;
+  /** Stable indirection so useSessionStore can call refreshGit before useGitDiff returns. */
+  const refreshGitRef = useRef<(cwd: string) => void | Promise<void>>(() => {});
 
   const {
     prompt,
@@ -154,14 +156,41 @@ export default function App() {
     clearAllDrafts,
   } = useComposerDrafts();
 
+  const {
+    sessions,
+    setSessions,
+    activeId,
+    setActiveId,
+    active,
+    sessionsRef,
+    activeIdRef,
+    cancelRequested,
+    inFlightRef,
+    lastActivityRef,
+    streamBuf,
+    patchSession,
+    selectSession,
+    cycleSession,
+    touchActivity,
+    ensureBuf,
+    clearStreamTurn,
+  } = useSessionStore({
+    saveDraft,
+    loadDraft,
+    setCwd,
+    refreshGit: (sessionCwd) => {
+      void refreshGitRef.current(sessionCwd);
+    },
+  });
+
   const getSessionCwd = useCallback((sessionId: string) => {
     return sessionsRef.current.find((x) => x.sessionId === sessionId)?.cwd;
-  }, []);
+  }, [sessionsRef]);
 
   const getOpenSession = useCallback((sessionId: string) => {
     const s = sessionsRef.current.find((x) => x.sessionId === sessionId);
     return s ? { cwd: s.cwd, title: s.title } : undefined;
-  }, []);
+  }, [sessionsRef]);
 
   const onHookError = useCallback((message: string) => {
     setError(message);
@@ -223,15 +252,10 @@ export default function App() {
     scheduleGitRefresh,
     selectGitFile: selectGitFileAt,
   } = useGitDiff({ activeId, getSessionCwd });
+  refreshGitRef.current = refreshGit;
 
-  /** sessionIds where user hit Stop — late prompt resolve should not re-busy. */
-  const cancelRequested = useRef<Set<string>>(new Set());
-  /** sessionIds with an in-flight session/prompt (busy may be false after Stop). */
-  const inFlightRef = useRef<Set<string>>(new Set());
   /** Auto-scroll only while the user is pinned near the bottom (per session). */
   const stickBottomRef = useRef<Record<string, boolean>>({});
-  /** Last ACP traffic per session (stall detection without re-render spam). */
-  const lastActivityRef = useRef<Record<string, number>>({});
   /** Re-render when stick-to-bottom flips so “Jump to latest” can show. */
   const [stickTick, setStickTick] = useState(0);
 
@@ -261,7 +285,7 @@ export default function App() {
     if (!el || !sid) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     setStuckToBottom(sid, dist <= NEAR_BOTTOM_PX);
-  }, []);
+  }, [activeIdRef]);
 
   const scrollToLatest = useCallback(
     (sessionId?: string | null, behavior: ScrollBehavior = "smooth") => {
@@ -271,33 +295,7 @@ export default function App() {
       if (!el) return;
       el.scrollTo({ top: el.scrollHeight, behavior });
     },
-    [],
-  );
-  // Per-session streaming buffers keyed by sessionId
-  const streamBuf = useRef<
-    Record<
-      string,
-      {
-        assistant: string;
-        thought: string;
-        user: string;
-        aId: string | null;
-        tId: string | null;
-        uId: string | null;
-        /**
-         * True while the current user bubble is still open for merge.
-         * Cleared when assistant/thought starts or turn_completed fires.
-         * Avoids relying on sessionsRef during rapid session/load replay
-         * (ref can lag one event behind setState).
-         */
-        userTurnOpen: boolean;
-      }
-    >
-  >({});
-
-  const active = useMemo(
-    () => sessions.find((s) => s.sessionId === activeId) ?? null,
-    [sessions, activeId],
+    [activeIdRef],
   );
 
   useEffect(() => {
@@ -389,89 +387,6 @@ export default function App() {
       window.clearInterval(periodic);
     };
   }, [checkForUpdates]);
-
-  const patchSession = useCallback(
-    (sessionId: string, fn: (s: DeskSession) => DeskSession) => {
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.sessionId !== sessionId) return s;
-          const next = fn(s);
-          // Cap transcript length so resume/long runs don't blow the webview
-          if (next.items.length > MAX_TRANSCRIPT_ITEMS) {
-            return {
-              ...next,
-              items: next.items.slice(-MAX_TRANSCRIPT_ITEMS),
-            };
-          }
-          return next;
-        }),
-      );
-    },
-    [],
-  );
-
-  /** Focus a session tab, persisting composer draft for the previous tab. */
-  const selectSession = useCallback(
-    (sessionId: string, sessionCwd: string) => {
-      const prev = activeIdRef.current;
-      if (prev && prev !== sessionId) {
-        saveDraft(prev);
-      }
-      if (prev !== sessionId) {
-        loadDraft(sessionId);
-      }
-      setActiveId(sessionId);
-      setCwd(sessionCwd);
-      void refreshGit(sessionCwd);
-    },
-    [saveDraft, loadDraft, refreshGit],
-  );
-
-  const cycleSession = useCallback(
-    (dir: 1 | -1) => {
-      const list = sessionsRef.current;
-      if (list.length < 2) return;
-      const cur = activeIdRef.current;
-      const idx = list.findIndex((s) => s.sessionId === cur);
-      const next =
-        list[(idx < 0 ? 0 : idx + dir + list.length) % list.length];
-      if (next) selectSession(next.sessionId, next.cwd);
-    },
-    [selectSession],
-  );
-
-  const touchActivity = useCallback((sessionId: string) => {
-    lastActivityRef.current[sessionId] = Date.now();
-  }, []);
-
-  const ensureBuf = (sessionId: string) => {
-    if (!streamBuf.current[sessionId]) {
-      streamBuf.current[sessionId] = {
-        assistant: "",
-        thought: "",
-        user: "",
-        aId: null,
-        tId: null,
-        uId: null,
-        userTurnOpen: false,
-      };
-    }
-    return streamBuf.current[sessionId];
-  };
-
-  /** End a stream turn so the next user/assistant/thought gets a new bubble.
-   * Critical for session/load replay — without this, every user_message_chunk
-   * is wrongly appended into the first user bubble. */
-  const clearStreamTurn = (sessionId: string) => {
-    const buf = ensureBuf(sessionId);
-    buf.assistant = "";
-    buf.thought = "";
-    buf.user = "";
-    buf.aId = null;
-    buf.tId = null;
-    buf.uId = null;
-    buf.userTurnOpen = false;
-  };
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -1614,6 +1529,21 @@ export default function App() {
       } catch {
         /* optional */
       }
+      // Tier 2b: hydrate Activity subagents from disk meta (Activity only; no transcript spam).
+      let diskSubs: SubagentItem[] = [];
+      try {
+        const metas = await invoke<DiskSubagentMeta[]>("list_session_subagents", {
+          sessionId: d.sessionId,
+          cwd: d.cwd,
+        });
+        for (const m of metas ?? []) {
+          const row = subagentFromDiskMeta(m);
+          if (row) diskSubs.push(row);
+        }
+      } catch {
+        /* optional — missing layout must not fail resume */
+      }
+
       patchSession(d.sessionId, (s) => ({
         ...s,
         busy: false,
@@ -1625,6 +1555,7 @@ export default function App() {
             ? loaded.availableModels
             : s.availableModels,
         title: resolveSessionTitle(s.cwd, customTitle, d.title, s.title),
+        subagents: mergeHydratedSubagents(s.subagents ?? [], diskSubs),
         items: [
           ...s.items
             .filter((i) => i.role !== "system" || !i.text.startsWith("Loading"))
@@ -3198,6 +3129,7 @@ export default function App() {
                       <TranscriptList
                         items={active.items}
                         contentMaxClass={chatMaxClass}
+                        busy={active.busy}
                         onOpenActivity={() => setInspectorTab("activity")}
                         onRetryUser={retryUserPrompt}
                       />
@@ -3404,6 +3336,30 @@ export default function App() {
                   backgroundTasks={active.backgroundTasks ?? []}
                   subagents={active.subagents ?? []}
                   busy={active.busy}
+                  onLoadSubagentOutput={async (subagentId) => {
+                    try {
+                      const body = await invoke<string | null>(
+                        "read_subagent_output",
+                        {
+                          sessionId: active.sessionId,
+                          cwd: active.cwd,
+                          subagentId,
+                          maxChars: OUTPUT_BODY_MAX,
+                        },
+                      );
+                      if (!body?.trim()) return;
+                      patchSession(active.sessionId, (s) => ({
+                        ...s,
+                        subagents: upsertSubagent(s.subagents ?? [], {
+                          subagentId,
+                          outputBody: body,
+                          outputSummary: body.slice(0, 300),
+                        }),
+                      }));
+                    } catch {
+                      /* disk optional */
+                    }
+                  }}
                 />
               )}
               {inspectorTab === "settings" && (
